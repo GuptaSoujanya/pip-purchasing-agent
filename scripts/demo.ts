@@ -14,7 +14,7 @@ import { seed } from "../src/lib/db/seed";
 import { resumeApprovedAction, runAgent, type RunResult } from "../src/lib/agent/orchestrator";
 import { getPo, listAudit, listPos, getBudget, budgetAvailable, listNodes, storageFreeSlots } from "../src/lib/db/repo";
 import { runOpportunitySweep } from "../src/lib/domain/opportunities";
-import { resolveProviderId } from "../src/lib/agent/llm";
+import { describeProvider } from "../src/lib/agent/llm";
 
 const C = {
   reset: "\x1b[0m", dim: "\x1b[90m", bold: "\x1b[1m",
@@ -67,9 +67,17 @@ async function main() {
   db.close();
 
   h1("AI PURCHASING AGENT — END-TO-END DEMO");
-  kv("Reasoning mode", resolveProviderId() === "none"
-    ? "deterministic (no API key configured — this is the default)"
-    : `LLM via ${resolveProviderId()}`);
+  const provider = describeProvider();
+
+  // The demo defaults to the deterministic engine even when a model is
+  // available, so that it stays fast and returns the same numbers on every
+  // machine — a walkthrough whose figures move between runs is a poor demo.
+  // The model path is one environment variable away, and is what `eval:llm`
+  // and `check:llm` exercise.
+  const demoMode = process.env.AGENT_MODE === "llm" ? "llm" : "deterministic";
+  kv("Reasoning mode", demoMode === "llm"
+    ? `${provider.label}  — real model reasoning`
+    : `deterministic policy engine  (reproducible; AGENT_MODE=llm runs this same demo through ${provider.real ? provider.label : "a model"})`);
   kv("Fault injection", (process.env.FAULT_INJECTION ?? "on") !== "off" ? "ON — suppliers will push back" : "off");
   note("Database rebuilt from seed. Everything below is computed, not scripted.");
 
@@ -83,7 +91,7 @@ async function main() {
     node_id: "NODE-BOG-01",
     product_id: "PRD-1001",
     recommended_qty: 800,
-  });
+  }, { mode: demoMode });
 
   h2("What the agent worked out");
   for (const factor of s1.keyFactors.slice(0, 7)) {
@@ -108,7 +116,7 @@ async function main() {
     node_id: "NODE-MED-02",
     product_id: "PRD-1005",
     recommended_qty: 500,
-  });
+  }, { mode: demoMode });
   printDecision(s1b);
   if (s1b.executedPoIds.length) {
     const po = getPo(s1b.executedPoIds[0]);
@@ -119,7 +127,7 @@ async function main() {
   h1("ACT 3 — A spike that is not a demand shift  (negative control)");
   note("Greek yogurt sales are up 61%. Statistically this looks like a real change.");
 
-  const s3b = await runAgent({ scenario: "demand_shift", node_id: "NODE-BOG-01", product_id: "PRD-1005" });
+  const s3b = await runAgent({ scenario: "demand_shift", node_id: "NODE-BOG-01", product_id: "PRD-1005" }, { mode: demoMode });
   printDecision(s3b);
   console.log(
     `\n  ${C.magenta}A 2-for-1 promotion explains the lift, so the correct answer is to do nothing.${C.reset}\n` +
@@ -131,7 +139,7 @@ async function main() {
   h1("ACT 4 — A real demand shift, and the supplier lets us down  (Scenario 3)");
   note("Energy drink sales have tripled. This one clears every evidence gate.");
 
-  const s3 = await runAgent({ scenario: "demand_shift", node_id: "NODE-BOG-01", product_id: "PRD-1003" });
+  const s3 = await runAgent({ scenario: "demand_shift", node_id: "NODE-BOG-01", product_id: "PRD-1003" }, { mode: demoMode });
   printDecision(s3);
 
   if (s3.status === "awaiting_approval" && s3.approvalId) {
@@ -186,7 +194,7 @@ async function main() {
   note("Cartagena needs bottled water. Both budget and storage block the full order —");
   note("the question is which one binds tighter, and what to do with the remainder.");
 
-  const s4 = await runAgent({ scenario: "constrained_purchase", node_id: "NODE-CTG-03", product_id: "PRD-1004" });
+  const s4 = await runAgent({ scenario: "constrained_purchase", node_id: "NODE-CTG-03", product_id: "PRD-1004" }, { mode: demoMode });
   printDecision(s4);
   printConstraints(s4);
 
@@ -250,7 +258,7 @@ async function main() {
   line("═");
   console.log(
     `${C.bold}Demo complete.${C.reset} ` +
-      `${C.dim}npm run eval${C.reset} for the 7-case assertion suite, ` +
+      `${C.dim}npm run eval${C.reset} for the 9-case assertion suite, ` +
       `${C.dim}npm run dev${C.reset} for the UI.`,
   );
   line("═");

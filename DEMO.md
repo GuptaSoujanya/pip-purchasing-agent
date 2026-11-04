@@ -3,9 +3,25 @@
 Two ways to see the system work. The first needs nothing but Node; the second shows the same
 behaviour in the UI.
 
-**No API key is required for either.** With no key configured the agent runs its deterministic
-reasoning path, which exercises every part of the pipeline — tools, constraint engine, autonomy
-gate, execution, post-execution validation, drift detection and self-correction.
+**No API key is required for either**, and you can still see real model reasoning.
+
+- If you have the [Claude Code CLI](https://claude.com/claude-code) installed and signed in, the
+  agent uses it as its model backend automatically — nothing to configure.
+- Otherwise drop a free [Gemini key](https://aistudio.google.com/apikey) into `.env.local`.
+- With neither, the agent runs its deterministic reasoning path, which still exercises every other
+  part of the pipeline — tools, constraint engine, autonomy gate, execution, post-execution
+  validation, drift detection and self-correction.
+
+Check which one you are on, and that it actually works:
+
+```bash
+npm run check:llm
+```
+
+It prints the resolved provider, then proves the model answers, selects a real tool from the
+21-tool catalogue, and drives a full scenario run with model-issued tool calls recorded in the
+trace. If reasoning would silently fall back to deterministic, this command says so and exits
+non-zero rather than letting you believe otherwise.
 
 ---
 
@@ -92,7 +108,7 @@ nothing.
 
 ### Evaluation
 
-9. **Open `Evaluation` and run the suite.** 7 cases, 61 assertions, checked against the run result,
+9. **Open `Evaluation` and run the suite.** 9 cases, 78 assertions, checked against the run result,
    the recorded trace, and the database state afterwards.
 
 ---

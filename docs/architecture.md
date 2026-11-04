@@ -85,11 +85,22 @@ database. No model. One function per scenario:
 
 ### Reconciliation
 
+Disagreements are graded, and tested in order of severity. The engine's arithmetic always wins;
+what the divergence decides is how much confidence survives it.
+
 | Condition | Outcome |
 |---|---|
-| Model's proposal breaches a hard constraint | Overridden with the policy engine's constraint-legal quantity |
-| Model's quantity diverges > 15% from the policy engine | Policy quantity used; confidence lowered to ≤ 0.65, which trips the autonomy gate and routes to a human |
-| Agreement within 15% | Policy engine's arithmetic kept, model's narrative and key factors adopted |
+| Model reaches a **different decision** from the engine | Engine's decision used; confidence cut to 0.65, which trips the autonomy gate and routes to a buyer |
+| Model's proposal **breaches a hard constraint** | Overridden with the engine's constraint-legal quantity; confidence cut to 0.65, because the reasoning wanted something illegal |
+| Same decision, quantity **> 35% apart** | Engine's quantity used; confidence cut to 0.65 |
+| Same decision, quantity **15–35% apart** | Engine's quantity used; confidence shaded ×0.9 with a 0.75 floor, and never raised |
+| Agreement within **15%** | Engine's arithmetic kept, model's narrative and key factors adopted |
+
+Order of evaluation is load-bearing. Testing quantity before decision kind — as an earlier version
+did — meant a model that disagreed about *what to do* retained full confidence and executed
+unattended, while a model that merely wanted a larger buffer was cut to 0.65 and escalated. The
+response was inversely proportional to the seriousness of the disagreement. Checking the decision
+first, then grading the quantity rather than applying a single cliff, corrects that.
 
 The divergence is written to the trace either way, so disagreements are visible rather than
 silently resolved.
