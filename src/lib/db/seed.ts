@@ -279,6 +279,7 @@ export function seed(db: Database.Database) {
     ["review_period_days", 14, "Replenishment review cycle used to size the protection horizon."],
     ["overstock_days_threshold", 45, "Days of cover beyond which an order is flagged as overstock."],
     ["max_remediation_attempts", 2, "How many times the agent may self-correct before escalating."],
+    ["immaterial_gap_days", 1, "A residual supply gap smaller than this many days of demand is absorbed rather than re-sourced, since supplier MOQ would force a disproportionate order."],
   ];
   policies.forEach((p) => insPolicy.run(...p));
 }

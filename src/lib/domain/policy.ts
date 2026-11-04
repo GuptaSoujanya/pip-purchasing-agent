@@ -8,6 +8,7 @@ import {
   getNode,
   getOpenPos,
   getPo,
+  getPolicies,
   getProduct,
   getActivePromotions,
   listNodes,
@@ -457,12 +458,47 @@ export function resolveShortfall(args: {
     { label: "Days of cover after partial", value: `${net.currentDaysOfCover} days`, impact: net.currentDaysOfCover < 14 ? "opposes" : "supports" },
   );
 
-  // Case A — existing stock absorbs the shortfall. Just amend and move on.
-  if (net.netRequirement === 0) {
-    rationale.push(
-      `After the partial delivery, on-hand plus inbound stock still covers ${net.horizonDays} days of demand plus safety stock. ` +
-        `The shortfall of ${shortfall} units does not need to be re-sourced.`,
-    );
+  // Case A — the shortfall does not need re-sourcing, either because stock
+  // absorbs it outright or because the residual gap is too small to be worth
+  // buying against. The second test matters: a positive net requirement does
+  // not make a purchase worthwhile. Supplier MOQ and lot size mean the smallest
+  // orderable quantity can be tens of times the actual gap, so mechanically
+  // filling any gap > 0 spends hundreds of dollars at a premium to protect a
+  // few hours of cover. A buyer absorbs that and reorders on the normal cycle.
+  const gapDays = demand.plannedDailyDemand > 0
+    ? net.netRequirement / demand.plannedDailyDemand
+    : 0;
+  const immaterialGapDays = getPolicies().immaterial_gap_days ?? 1;
+  const gapIsImmaterial = net.netRequirement > 0 && gapDays < immaterialGapDays;
+
+  if (net.netRequirement === 0 || gapIsImmaterial) {
+    if (gapIsImmaterial) {
+      const cheapestAlternate = listSupplierOptions(args.productId)
+        .filter((o) => o.supplier_id !== po.supplier_id)
+        .sort((a, b) => a.unit_price * Math.max(a.moq, net.netRequirement) - b.unit_price * Math.max(b.moq, net.netRequirement))[0];
+      const minOrderCost = cheapestAlternate
+        ? round2(Math.max(cheapestAlternate.moq, net.netRequirement) * cheapestAlternate.unit_price)
+        : null;
+      rationale.push(
+        `The residual gap of ${net.netRequirement} units is ${gapDays.toFixed(2)} days of demand — below the ` +
+          `${immaterialGapDays}-day materiality threshold.` +
+          (minOrderCost !== null
+            ? ` Covering it would mean a ${Math.max(cheapestAlternate!.moq, net.netRequirement)}-unit minimum order ` +
+              `costing $${minOrderCost.toFixed(2)} to protect $${round2(net.netRequirement * line.unit_price).toFixed(2)} ` +
+              `of exposure, so the gap is absorbed and picked up on the normal replenishment cycle.`
+            : ` The gap is absorbed and picked up on the normal replenishment cycle.`),
+      );
+      keyFactors.push({
+        label: "Gap materiality",
+        value: `${gapDays.toFixed(2)} days of cover`,
+        impact: "supports",
+      });
+    } else {
+      rationale.push(
+        `After the partial delivery, on-hand plus inbound stock still covers ${net.horizonDays} days of demand plus safety stock. ` +
+          `The shortfall of ${shortfall} units does not need to be re-sourced.`,
+      );
+    }
     return {
       decision: "ACCEPT",
       action: {

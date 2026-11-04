@@ -58,6 +58,7 @@ export async function runCase(c: EvalCase, mode: "llm" | "deterministic"): Promi
   // Fresh world per case.
   const db = resetSchema();
   seed(db);
+  c.setup?.();
 
   const prevFaults = process.env.FAULT_INJECTION;
   if (c.disableFaults) process.env.FAULT_INJECTION = "off";

@@ -9,7 +9,7 @@ import {
   getSupplierProduct,
   storageFreeSlots,
 } from "../db/repo";
-import { daysOfCoverAfter, largestFeasibleQty, spoilageRisk } from "./math";
+import { daysOfCoverAfter, largestFeasibleQty, round2, spoilageRisk } from "./math";
 import type { ConstraintCheck, ValidationResult } from "./types";
 
 /**
@@ -355,4 +355,123 @@ export function validateResultingPo(args: {
   }
 
   return summarise(checks, effective, args.expectedQty);
+}
+
+/**
+ * Pre-flight check for amending or cancelling an existing purchase order.
+ *
+ * `validatePurchase` answers "may we buy this?", which is the wrong question
+ * for an amendment: there is no new supplier selection and, when the quantity
+ * falls, budget and storage are released rather than consumed. What has to be
+ * established instead is that the order is actually amendable and that an
+ * *increase* — which is a purchase of the delta in all but name — still clears
+ * budget and storage. Without this an amendment upward would reach the database
+ * having passed no constraint check at all.
+ */
+export function validateAmendment(args: {
+  po_id: string;
+  product_id: string;
+  new_qty: number;
+}): ValidationResult {
+  const checks: ConstraintCheck[] = [];
+  const po = getPo(args.po_id);
+
+  if (!po) {
+    checks.push({
+      code: "PO_EXISTS", label: "Purchase order exists", severity: "hard", passed: false,
+      detail: `No purchase order ${args.po_id} was found.`,
+    });
+    return summariseAmendment(checks);
+  }
+
+  const amendable: string[] = ["draft", "submitted", "confirmed", "partially_confirmed"];
+  checks.push({
+    code: "PO_AMENDABLE", label: "Purchase order is amendable", severity: "hard",
+    passed: amendable.includes(po.status),
+    detail: amendable.includes(po.status)
+      ? `${po.po_number} is ${po.status} and may still be changed.`
+      : `${po.po_number} is ${po.status}; it can no longer be amended.`,
+  });
+
+  const line = po.lines.find((l) => l.product_id === args.product_id);
+  checks.push({
+    code: "PO_LINE_EXISTS", label: "Line exists on the order", severity: "hard",
+    passed: !!line,
+    detail: line
+      ? `${po.po_number} carries ${line.qty_ordered} units of ${args.product_id}.`
+      : `${po.po_number} has no line for ${args.product_id}.`,
+  });
+
+  checks.push({
+    code: "QTY_NON_NEGATIVE", label: "Quantity is not negative", severity: "hard",
+    passed: args.new_qty >= 0,
+    detail: `Requested new quantity is ${args.new_qty}.`,
+    observed: args.new_qty, limit: 0,
+  });
+
+  if (line) {
+    const delta = args.new_qty - line.qty_ordered;
+
+    if (delta > 0) {
+      const sp = getSupplierProduct(po.supplier_id, args.product_id);
+      const product = getProduct(args.product_id);
+      const node = getNode(po.node_id);
+      const budget = getBudget(po.node_id);
+
+      const deltaCost = round2(delta * (sp?.unit_price ?? 0));
+      const freeBudget = budget ? budgetAvailable(budget) : 0;
+      checks.push({
+        code: "BUDGET", label: "Increase is funded", severity: "hard",
+        passed: deltaCost <= freeBudget,
+        detail: deltaCost <= freeBudget
+          ? `Raising the order by ${delta} units costs $${deltaCost.toFixed(2)} against $${freeBudget.toFixed(2)} available.`
+          : `Raising the order by ${delta} units costs $${deltaCost.toFixed(2)} but only $${freeBudget.toFixed(2)} remains.`,
+        observed: deltaCost, limit: freeBudget,
+        maxFeasibleQty: sp && sp.unit_price > 0
+          ? line.qty_ordered + Math.floor(freeBudget / sp.unit_price)
+          : line.qty_ordered,
+      });
+
+      const deltaSlots = delta * (product?.slots_per_unit ?? 1);
+      const freeSlots = node ? storageFreeSlots(node) : 0;
+      checks.push({
+        code: "STORAGE", label: "Increase fits in storage", severity: "hard",
+        passed: deltaSlots <= freeSlots,
+        detail: deltaSlots <= freeSlots
+          ? `The extra ${delta} units need ${deltaSlots} slots against ${freeSlots} free.`
+          : `The extra ${delta} units need ${deltaSlots} slots but only ${freeSlots} are free.`,
+        observed: deltaSlots, limit: freeSlots,
+        maxFeasibleQty: product && product.slots_per_unit > 0
+          ? line.qty_ordered + Math.floor(freeSlots / product.slots_per_unit)
+          : line.qty_ordered,
+      });
+    } else {
+      checks.push({
+        code: "RELEASES_COMMITMENT", label: "Reduction releases commitment", severity: "soft",
+        passed: true,
+        detail: delta === 0
+          ? `Quantity is unchanged at ${line.qty_ordered} units.`
+          : `Reducing by ${Math.abs(delta)} units returns budget and storage to the pool.`,
+        observed: Math.abs(delta),
+      });
+    }
+  }
+
+  return summariseAmendment(checks);
+}
+
+function summariseAmendment(checks: ConstraintCheck[]): ValidationResult {
+  const hardFailures = checks.filter((c) => c.severity === "hard" && !c.passed);
+  const softWarnings = checks.filter((c) => c.severity === "soft" && !c.passed);
+  const caps = hardFailures.map((f) => f.maxFeasibleQty).filter((n): n is number => typeof n === "number");
+  return {
+    passed: hardFailures.length === 0,
+    hardFailures,
+    softWarnings,
+    checks,
+    maxFeasibleQty: caps.length ? Math.min(...caps) : 0,
+    bindingConstraint: hardFailures.length
+      ? hardFailures.reduce((a, b) => ((a.maxFeasibleQty ?? 0) <= (b.maxFeasibleQty ?? 0) ? a : b)).code
+      : null,
+  };
 }

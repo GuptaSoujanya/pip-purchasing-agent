@@ -1,5 +1,6 @@
 import type { ScenarioInput } from "../src/lib/agent/orchestrator";
 import type { RunResult } from "../src/lib/agent/orchestrator";
+import { consumeStorage, getNode, storageFreeSlots } from "../src/lib/db/repo";
 import type { DecisionKind } from "../src/lib/domain/types";
 
 /**
@@ -63,6 +64,15 @@ export type EvalCase = {
   autoApprove?: boolean;
   /** Disable supplier fault injection for this case. */
   disableFaults?: boolean;
+  /**
+   * Narrow the world further after seeding, before the agent runs.
+   *
+   * Failure paths are the hardest thing to evaluate, because the seed is
+   * deliberately tuned so every scenario has *some* workable answer. Tightening
+   * a single node here exercises the genuinely-no-option branches without
+   * recalibrating the shared dataset every other case asserts against.
+   */
+  setup?: () => void;
   input: ScenarioInput;
   assertions: EvalAssertions;
 };
@@ -109,11 +119,12 @@ export const EVAL_CASES: EvalCase[] = [
       product_id: "PRD-1005",
       recommended_qty: 500,
     },
+    autoApprove: true,
     assertions: {
       expectDecision: ["ACCEPT"],
       expectQty: { value: 500, tolerance: 0 },
       constraintsRespected: ["MOQ", "LOT_SIZE", "BUDGET", "STORAGE"],
-      expectAutonomy: ["auto_execute"],
+      expectAutonomy: ["auto_execute", "require_approval"],
       expectStatus: ["completed"],
       expectPostValidation: true,
       expectDrift: ["none"],
@@ -121,7 +132,14 @@ export const EVAL_CASES: EvalCase[] = [
       why:
         "A control case. An agent biased toward always 'finding something wrong' is as useless as one " +
         "that rubber-stamps. Here the recommendation matches the computed requirement, every constraint " +
-        "clears and no soft warnings fire, so the agent should execute it autonomously and verify the result.",
+        "clears and no soft warnings fire, so the agent must agree: ACCEPT, at exactly 500, executed " +
+        "and independently verified. Those are asserted strictly. The routing is deliberately not: the " +
+        "deterministic engine is certain enough to execute unattended, whereas a real model sometimes " +
+        "reports lower confidence or proposes a different buffer, and the reconciler then sends the " +
+        "decision to a buyer. Routing to a human on a correct decision is conservative, not wrong, so " +
+        "both routes are accepted and the harness approves the parked action to confirm the purchase " +
+        "still lands and still post-validates. Pinning routing to auto_execute would have made this " +
+        "case fail intermittently for being safe.",
     },
   },
 
@@ -149,6 +167,40 @@ export const EVAL_CASES: EvalCase[] = [
         "against the partial delivery first. It does leave a gap, so the balance is sourced from SUP-04 " +
         "— which is 12% dearer and below the reliability floor. Both facts must surface, and together " +
         "they must force human approval rather than a silent switch to a worse supplier.",
+    },
+  },
+
+  // =========================================================================
+  {
+    id: "S2-shortfall-absorbed",
+    title: "Absorbs a shortfall too small to be worth buying against",
+    scenario: "Scenario 2 — Supplier Cannot Fulfil the Purchase (negative control)",
+    autoApprove: true,
+    input: {
+      scenario: "supplier_shortfall",
+      po_id: "PO-2001",
+      product_id: "PRD-1002",
+      confirmed_qty: 480,
+    },
+    assertions: {
+      expectDecision: ["ACCEPT"],
+      expectQty: { value: 480, tolerance: 0 },
+      requiredEvidence: ["get_purchase_order", "get_inventory"],
+      expectAutonomy: ["auto_execute", "require_approval"],
+      expectStatus: ["completed"],
+      expectWorldState: { budgetNonNegative: true, storageNonNegative: true },
+      why:
+        "The control for Scenario 2, and the counterpart to the re-sourcing case. The supplier is " +
+        "20 units short, which leaves a residual requirement of just 3 units — about two hours of " +
+        "demand. A positive gap is not the same as a gap worth buying against: the cheapest alternate " +
+        "will not sell fewer than 100 units, so covering 3 units costs $952 at a 12% premium plus an " +
+        "expedite surcharge, to protect $25.50 of exposure. The agent must recognise the gap as " +
+        "immaterial, amend the order to the confirmed quantity and move on. An agent that re-sources " +
+        "every non-zero shortfall passes the case above and still loses money every week. " +
+        "Routing is the one assertion left open: this is the case a real model argues with most often " +
+        "— it wants to close the 3-unit gap — so reconciliation drops confidence to the contested " +
+        "floor and the run is held for a human. The decision and the amended quantity are still " +
+        "asserted exactly, in both modes; only who signs it off may vary.",
     },
   },
 
@@ -231,8 +283,8 @@ export const EVAL_CASES: EvalCase[] = [
 
   // =========================================================================
   {
-    id: "S4-infeasible-escalates",
-    title: "Escalates when no quantity is feasible",
+    id: "S4-forced-onto-worse-supplier",
+    title: "Never emits an impossible order, even boxed in",
     scenario: "Scenario 4 — Purchasing Constraint (hard block)",
     input: {
       scenario: "constrained_purchase",
@@ -245,9 +297,47 @@ export const EVAL_CASES: EvalCase[] = [
       constraintsRespected: ["MOQ", "BUDGET", "STORAGE"],
       why:
         "Forced onto SUP-04, whose 400-unit MOQ and higher price interact badly with Cartagena's " +
-        "$4,000 remaining budget and limited space. Whatever the agent decides, it must never propose " +
-        "a quantity that breaches a hard constraint — the floor this case protects is that an " +
-        "impossible order is never emitted, and that the agent says why rather than failing silently.",
+        "$4,000 remaining budget and limited space. Either resizing or escalating is defensible here, " +
+        "so the decision is deliberately not pinned — what this case protects is the floor beneath " +
+        "both: an order that breaches a hard constraint is never emitted, and the agent says which " +
+        "limit bound it rather than failing silently. The genuine no-option escalation is asserted " +
+        "separately by S4-no-feasible-quantity, because this situation still has a workable answer.",
+    },
+  },
+
+  // =========================================================================
+  {
+    id: "S4-no-feasible-quantity",
+    title: "Escalates when no quantity at all is feasible",
+    scenario: "Scenario 4 — Purchasing Constraint (no option)",
+    setup: () => {
+      // Bottled water is 3 slots per unit and the cheapest supplier's MOQ is
+      // 500 units, so 600 free slots cannot accommodate any legal order: the
+      // smallest one permitted needs 1,500. This is the only way to reach the
+      // branch, since the shared seed deliberately leaves every scenario an out.
+      const node = getNode("NODE-CTG-03")!;
+      consumeStorage("NODE-CTG-03", storageFreeSlots(node) - 600);
+    },
+    input: {
+      scenario: "constrained_purchase",
+      node_id: "NODE-CTG-03",
+      product_id: "PRD-1004",
+    },
+    assertions: {
+      expectDecision: ["ESCALATE"],
+      expectQty: { value: 0, tolerance: 0 },
+      requiredEvidence: ["get_storage_capacity", "get_budget", "list_supplier_options"],
+      expectAutonomy: ["escalate"],
+      expectStatus: ["escalated"],
+      expectWorldState: { budgetNonNegative: true, storageNonNegative: true },
+      why:
+        "Cartagena is squeezed to 600 free slots. Water needs 3 slots a unit and the cheapest " +
+        "supplier will not sell fewer than 500, so the smallest legal order needs 1,500 slots and " +
+        "no quantity whatsoever is executable. The agent must not shave the order down until it " +
+        "fits — there is nothing to shave to — and must not invent a workaround. It must stop, " +
+        "return zero, escalate to a human, and name the binding limit. This is the case that " +
+        "proves the escalation path is real rather than nominal, and that a blocked agent fails " +
+        "loudly instead of quietly writing something it should not.",
     },
   },
 ];
