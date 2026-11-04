@@ -173,6 +173,7 @@ export type AgentRun = {
   decision: DecisionKind | null;
   confidence: number | null;
   summary: string | null;
+  result_json: string | null;
   started_at: string;
   finished_at: string | null;
 };

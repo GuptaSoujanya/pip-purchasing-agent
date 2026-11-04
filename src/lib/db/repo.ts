@@ -427,8 +427,36 @@ export function finishRun(
     );
 }
 
+export function saveRunResult(id: string, result: unknown) {
+  getDb()
+    .prepare("UPDATE agent_runs SET result_json = ? WHERE id = ?")
+    .run(JSON.stringify(result), id);
+}
+
 export function getRun(id: string) {
   return getDb().prepare<[string], AgentRun>("SELECT * FROM agent_runs WHERE id = ?").get(id) ?? null;
+}
+
+// Keyed on scenario plus every identifier a scenario can carry, since node/product and
+// po_id each identify a situation for different scenarios.
+export function listLatestRunsBySituation(limit = 200) {
+  const runs = getDb()
+    .prepare<[number], AgentRun>("SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT ?")
+    .all(limit);
+  const latest = new Map<string, AgentRun>();
+  for (const run of runs) {
+    let input: Record<string, unknown> = {};
+    try {
+      input = JSON.parse(run.input_json) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const key = [run.scenario, input.node_id, input.product_id, input.po_id]
+      .map((part) => part ?? "-")
+      .join("|");
+    if (!latest.has(key)) latest.set(key, run);
+  }
+  return latest;
 }
 
 export const listRuns = (limit = 50) =>

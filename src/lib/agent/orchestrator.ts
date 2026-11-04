@@ -7,15 +7,17 @@ import {
   getPo,
   getPolicies,
   getProduct,
+  getRun,
   getSteps,
   getSupplier,
   getSupplierProduct,
   markEventProcessed,
   recordValidation,
   resolveApproval,
+  saveRunResult,
 } from "../db/repo";
 import { evaluateAutonomy, pricePremium } from "../domain/autonomy";
-import { validatePurchase, validateResultingPo } from "../domain/constraints";
+import { validateAmendment, validatePurchase, validateResultingPo } from "../domain/constraints";
 import { round2 } from "../domain/math";
 import {
   assessDemandShift,
@@ -190,6 +192,14 @@ export async function runAgent(input: ScenarioInput, opts: RunOptions = {}): Pro
         product_id: action.product_id, qty: action.qty,
         expedite: action.expedite, dailyDemand: effective.demandSignal.plannedDailyDemand,
       });
+    } else if (action.kind === "amend_po" || action.kind === "cancel_po") {
+      preValidation = validateAmendment({
+        po_id: action.po_id,
+        product_id: "product_id" in action && action.product_id
+          ? action.product_id
+          : (getPo(action.po_id)?.lines[0]?.product_id ?? ""),
+        new_qty: action.kind === "amend_po" ? action.new_qty : 0,
+      });
     }
 
     if (preValidation) {
@@ -293,12 +303,7 @@ export async function runAgent(input: ScenarioInput, opts: RunOptions = {}): Pro
     }
 
     const summary = buildSummary(effective, autonomy, drift, remediations, status);
-    finishRun(runId, {
-      status, decision: effective.decision,
-      confidence: effective.confidence, summary,
-    });
-
-    return {
+    const result: RunResult = {
       runId, scenario: input.scenario, mode, status,
       decision: effective.decision,
       confidence: effective.confidence,
@@ -313,6 +318,14 @@ export async function runAgent(input: ScenarioInput, opts: RunOptions = {}): Pro
       llmDivergence: divergence,
       policyOutcome: policy,
     };
+    // Payload first: a watcher that sees the status leave "running" must find the result
+    // already there, or it reports a finished run as empty.
+    saveRunResult(runId, result);
+    finishRun(runId, {
+      status, decision: effective.decision,
+      confidence: effective.confidence, summary,
+    });
+    return result;
   } catch (err) {
     const message = (err as Error).message;
     trace.add({ phase: "escalate", type: "note", ok: false, reasoning: `Run failed: ${message}` });
@@ -364,13 +377,66 @@ async function executeAndVerify(args: {
   }
 
   if (action.kind === "amend_po" || action.kind === "cancel_po") {
+    // The assignment asks for the result of a create *or modify* to be
+    // validated, so an amendment goes through the same contract-then-verify
+    // loop as a purchase: state the expectation first, write, then re-read the
+    // order independently rather than trusting the write's own report.
+    const amendedPo = getPo(action.po_id);
+    const amendNode = amendedPo?.node_id ?? "";
+    const amendProduct = "product_id" in action && action.product_id
+      ? action.product_id
+      : (amendedPo?.lines[0]?.product_id ?? "");
+
+    const expectation = buildExpectation({
+      action, nodeId: amendNode, productId: amendProduct,
+      dailyDemand, expectedQty: action.kind === "amend_po" ? action.new_qty : 0,
+      expectedUnitPrice: 0,
+    });
+    trace.add({
+      phase: "act", type: "note",
+      reasoning: `Expectation contract — ${expectation.description}`,
+      output: expectation,
+    });
+
     const res = executeAction(action, dailyDemand, ctx);
     trace.add({
       phase: "act", type: "tool_call", tool_name: toolNameFor(action),
       input: action, output: res.data ?? res.error, ok: res.ok,
     });
-    if (res.ok && "po_id" in action) poIds.push(action.po_id);
-    return { poIds, drift: null, remediations, status: res.ok ? "completed" : "failed" };
+
+    if (!res.ok) {
+      recordValidation(args.runId, "post", false, [
+        { code: "WRITE_FAILED", passed: false, detail: res.error ?? "Amendment did not apply." },
+      ]);
+      return { poIds, drift: null, remediations, status: "failed" };
+    }
+
+    poIds.push(action.po_id);
+
+    const drift = verifyExpectation({
+      expectation, poId: action.po_id,
+      nodeId: amendNode, productId: amendProduct, dailyDemand,
+    });
+    recordValidation(
+      args.runId,
+      "post",
+      drift.severity === "none" || drift.severity === "benign",
+      drift.findings.length
+        ? drift.findings.map((f) => ({
+            code: f.field, passed: false,
+            detail: `expected ${f.expected}, observed ${f.actual}`,
+          }))
+        : [{ code: "AMENDMENT_APPLIED", passed: true, detail: expectation.description }],
+    );
+    trace.add({
+      phase: "post_validate", type: "drift",
+      ok: drift.severity === "none" || drift.severity === "benign",
+      reasoning: drift.summary,
+      output: { drift },
+    });
+
+    const amendOk = drift.severity === "none" || drift.severity === "benign";
+    return { poIds, drift, remediations, status: amendOk ? "completed" : "escalated" };
   }
 
   // --- PHASE 5: the main purchase ----------------------------------------
@@ -603,13 +669,18 @@ export async function resumeApprovedAction(approvalId: string, resolvedBy: strin
     dailyDemand: context?.dailyDemand ?? 0,
   });
 
-  finishRun(runId, {
+  const summary = outcome.drift
+    ? `Executed after approval. ${outcome.drift.summary}`
+    : "Executed after approval; outcome matched expectation.";
+  mergeRunResult(runId, {
     status: outcome.status,
-    decision: null,
-    summary: outcome.drift
-      ? `Executed after approval. ${outcome.drift.summary}`
-      : "Executed after approval; outcome matched expectation.",
+    summary,
+    approvalId: null,
+    executedPoIds: outcome.poIds,
+    drift: outcome.drift,
+    remediations: outcome.remediations,
   });
+  finishRun(runId, { status: outcome.status, decision: null, summary });
 
   return {
     runId, approvalId, status: outcome.status,
@@ -617,6 +688,18 @@ export async function resumeApprovedAction(approvalId: string, resolvedBy: strin
     drift: outcome.drift,
     remediations: outcome.remediations,
   };
+}
+
+// Approval and rejection land on a run that already stored its decision, so the
+// stored payload is patched rather than rebuilt to keep the original reasoning.
+function mergeRunResult(runId: string, patch: Record<string, unknown>) {
+  const stored = getRun(runId)?.result_json;
+  if (!stored) return;
+  try {
+    saveRunResult(runId, { ...(JSON.parse(stored) as object), ...patch });
+  } catch {
+    // A corrupt payload is not worth failing an executed purchase over.
+  }
 }
 
 export function rejectAction(approvalId: string, resolvedBy: string, note?: string) {
@@ -628,7 +711,9 @@ export function rejectAction(approvalId: string, resolvedBy: string, note?: stri
     phase: "act", type: "note", ok: false,
     reasoning: `Buyer ${resolvedBy} rejected the proposed action${note ? `: "${note}"` : "."} No purchase was made.`,
   });
-  finishRun(approval.run_id, { status: "completed", summary: `Rejected by ${resolvedBy}. No action taken.` });
+  const summary = `Rejected by ${resolvedBy}. No action taken.`;
+  mergeRunResult(approval.run_id, { status: "completed", summary, approvalId: null, rejected: true });
+  finishRun(approval.run_id, { status: "completed", summary });
   return { approvalId, status: "rejected" as const };
 }
 
@@ -862,21 +947,37 @@ function reconcile(
   proposal: LlmProposal,
   input: ScenarioInput,
 ): { outcome: PolicyOutcome; divergence: { diverged: boolean; note: string }; acceptedSource: "llm" | "policy" } {
-  const DIVERGENCE_TOLERANCE = 0.15;
+  const AGREEMENT_BAND = 0.15;
+  const CONTESTED_BAND = 0.35;
+  const CONTESTED_CONFIDENCE = 0.65;
 
-  // No purchase on either side — nothing to reconcile.
+  // Disagreeing about WHAT to do is more serious than disagreeing about how
+  // much, so it is tested first and weighted hardest. Two independent assessors
+  // reaching different courses of action is the strongest uncertainty signal
+  // this system can observe, and it must reach a human.
+  if (proposal.decision !== policy.decision) {
+    return {
+      outcome: { ...policy, confidence: round2(Math.min(policy.confidence, CONTESTED_CONFIDENCE)) },
+      acceptedSource: "policy",
+      divergence: {
+        diverged: true,
+        note:
+          `Model concluded ${proposal.decision} while the policy engine computed ${policy.decision}. ` +
+          `The engine's conclusion is authoritative because it is derived directly from the data, but a ` +
+          `disagreement about the course of action is material, so confidence is lowered to ` +
+          `${CONTESTED_CONFIDENCE} and a buyer adjudicates rather than the system proceeding on a contested call.`,
+      },
+    };
+  }
+
+  // Same decision, and nothing quantitative to compare.
   if (policy.action.kind !== "create_po" || !proposal.supplier_id || !proposal.recommended_qty) {
-    const agrees = proposal.decision === policy.decision;
     return {
       outcome: policy,
       acceptedSource: "policy",
       divergence: {
-        diverged: !agrees,
-        note: agrees
-          ? `Model and policy engine agree on ${policy.decision}; no quantity to reconcile.`
-          : `Model proposed ${proposal.decision} while the policy engine computed ${policy.decision}. ` +
-            `The policy engine's conclusion is authoritative here because it is derived directly from the data; ` +
-            `the divergence is recorded for review.`,
+        diverged: false,
+        note: `Model and policy engine agree on ${policy.decision}; no quantity to reconcile.`,
       },
     };
   }
@@ -893,14 +994,15 @@ function reconcile(
 
   if (!proposedValidation.passed) {
     return {
-      outcome: policy,
+      outcome: { ...policy, confidence: round2(Math.min(policy.confidence, CONTESTED_CONFIDENCE)) },
       acceptedSource: "policy",
       divergence: {
         diverged: true,
         note:
           `Model proposed ${proposal.recommended_qty} units from ${proposal.supplier_id}, but that breaches ` +
           `${proposedValidation.hardFailures.map((f) => f.code).join(", ")}. Overridden with the policy engine's ` +
-          `constraint-legal quantity of ${policy.recommendedQty}.`,
+          `constraint-legal quantity of ${policy.recommendedQty}. A proposal that would have broken a hard ` +
+          `constraint is treated as a material divergence, so the corrected order is reviewed by a buyer.`,
       },
     };
   }
@@ -908,18 +1010,37 @@ function reconcile(
   const delta = Math.abs(proposal.recommended_qty - policy.recommendedQty) /
     Math.max(1, policy.recommendedQty);
 
-  if (delta > DIVERGENCE_TOLERANCE) {
+  if (delta > CONTESTED_BAND) {
     return {
-      // Keep the policy quantity, but carry the model's lower confidence so the
-      // autonomy gate routes the disagreement to a human.
-      outcome: { ...policy, confidence: round2(Math.min(policy.confidence, 0.65)) },
+      outcome: { ...policy, confidence: round2(Math.min(policy.confidence, CONTESTED_CONFIDENCE)) },
       acceptedSource: "policy",
       divergence: {
         diverged: true,
         note:
           `Model proposed ${proposal.recommended_qty} units; the policy engine computed ${policy.recommendedQty} ` +
-          `(${Math.round(delta * 100)}% apart, beyond the ${DIVERGENCE_TOLERANCE * 100}% tolerance). ` +
+          `(${Math.round(delta * 100)}% apart, beyond the ${CONTESTED_BAND * 100}% contested threshold). ` +
           `Proceeding with the policy quantity and lowering confidence so the decision is reviewed by a buyer.`,
+      },
+    };
+  }
+
+  if (delta > AGREEMENT_BAND) {
+    // Both sides want the same action from the same supplier and both quantities
+    // clear every hard constraint; they differ only in how much buffer to carry.
+    // That is ordinary buyer judgement rather than a contested decision, so
+    // confidence is shaded by a tenth rather than cut to the approval floor —
+    // and the shading can only ever lower it.
+    const shaded = round2(Math.min(policy.confidence, Math.max(0.75, policy.confidence * 0.9)));
+    return {
+      outcome: { ...policy, confidence: shaded },
+      acceptedSource: "policy",
+      divergence: {
+        diverged: true,
+        note:
+          `Model proposed ${proposal.recommended_qty} units against the policy engine's ${policy.recommendedQty} ` +
+          `(${Math.round(delta * 100)}% apart). Both are constraint-legal and both agree on ${policy.decision} ` +
+          `from ${proposal.supplier_id}, so this is a buffer disagreement, not a contested decision. The engine's ` +
+          `arithmetic stands and confidence is shaded to ${shaded}.`,
       },
     };
   }

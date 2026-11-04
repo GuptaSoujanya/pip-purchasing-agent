@@ -193,6 +193,7 @@ CREATE TABLE agent_runs (
   decision      TEXT,                     -- ACCEPT | MODIFY | REJECT | INVESTIGATE | SPLIT_SOURCE | ESCALATE
   confidence    REAL,
   summary       TEXT,
+  result_json   TEXT,                     -- full decision payload, so a refresh rebuilds the run
   started_at    TEXT NOT NULL,
   finished_at   TEXT
 );
