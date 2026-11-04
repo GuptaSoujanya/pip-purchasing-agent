@@ -1,6 +1,16 @@
 import Link from "next/link";
 import { listRuns } from "@/lib/db/repo";
-import { Badge, DecisionBadge, Empty, PageHeader, Panel, RunLink, StatusBadge, Table, Td } from "@/components/ui";
+import {
+  Badge,
+  DecisionBadge,
+  Empty,
+  PageHeader,
+  Panel,
+  RunLink,
+  StatusBadge,
+  Table,
+  Td,
+} from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -11,28 +21,68 @@ export default function RunsPage() {
     <>
       <PageHeader
         title="Agent runs"
-        subtitle="Every run is recorded end to end — the tools it called, the numbers it got back, the constraints it checked, what it did, and whether the result matched what it expected."
-        actions={<Link href="/scenarios" className="btn btn-primary">Run a scenario</Link>}
+        subtitle="Review recorded decisions, supporting evidence, and execution outcomes."
+        actions={
+          <Link href="/scenarios" className="btn btn-primary">
+            Run a scenario
+          </Link>
+        }
       />
 
-      <Panel>
+      <Panel
+        title="Recent activity"
+        subtitle={`${runs.length} recorded ${runs.length === 1 ? "run" : "runs"}`}
+      >
         {runs.length === 0 ? (
           <Empty>
-            Nothing yet. <Link href="/scenarios" className="text-sky-400 hover:underline">Run a scenario</Link>.
+            <span className="mb-2 block text-base font-semibold text-stone-800">
+              No agent runs yet
+            </span>
+            Run a scenario to create a record of its recommendation and outcome.
+            <Link
+              href="/scenarios"
+              className="mt-4 block font-medium text-emerald-800 hover:underline"
+            >
+              View scenarios →
+            </Link>
           </Empty>
         ) : (
-          <Table head={["Run", "Scenario", "Mode", "Decision", "Confidence", "Status", "Summary"]}>
+          <Table
+            head={[
+              "Run",
+              "Scenario",
+              "Mode",
+              "Decision",
+              "Confidence",
+              "Status",
+              "Summary",
+            ]}
+          >
             {runs.map((r) => (
               <tr key={r.id}>
-                <Td><RunLink id={r.id}>{r.id.slice(-9)}</RunLink></Td>
-                <Td className="text-[12px] text-slate-400">{r.scenario.replace(/_/g, " ")}</Td>
-                <Td><Badge tone="slate">{r.mode}</Badge></Td>
-                <Td><DecisionBadge decision={r.decision} /></Td>
-                <Td className="mono text-slate-400">
-                  {r.confidence !== null ? `${(r.confidence * 100).toFixed(0)}%` : "—"}
+                <Td>
+                  <RunLink id={r.id}>{r.id.slice(-9)}</RunLink>
                 </Td>
-                <Td><StatusBadge status={r.status} /></Td>
-                <Td className="max-w-md text-[12px] leading-relaxed text-slate-400">{r.summary ?? "—"}</Td>
+                <Td className="text-[12px] text-stone-600">
+                  {r.scenario.replace(/_/g, " ")}
+                </Td>
+                <Td>
+                  <Badge tone="slate">{r.mode}</Badge>
+                </Td>
+                <Td>
+                  <DecisionBadge decision={r.decision} />
+                </Td>
+                <Td className="mono text-stone-600">
+                  {r.confidence !== null
+                    ? `${(r.confidence * 100).toFixed(0)}%`
+                    : "—"}
+                </Td>
+                <Td>
+                  <StatusBadge status={r.status} />
+                </Td>
+                <Td className="max-w-md text-[12px] leading-relaxed text-stone-600">
+                  {r.summary ?? "—"}
+                </Td>
               </tr>
             ))}
           </Table>
