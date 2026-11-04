@@ -29,6 +29,13 @@ npm run db:reset     # rebuild the demo world from scratch
 npm run typecheck    # strict TypeScript, no errors
 ```
 
+```bash
+npm run demo         # the whole system end to end in the terminal, ~30s, no browser
+```
+
+A full walkthrough of both the terminal and browser demos, with screenshots and what to look for at
+each step, is in [`DEMO.md`](DEMO.md).
+
 ### The 90-second demo
 
 1. Open **Scenarios**.
@@ -48,49 +55,105 @@ running promotion explains the lift, so the correct answer is to do nothing. The
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph UI["Web UI · Next.js App Router + React 19"]
+        direction LR
+        U1["Dashboard"]
+        U2["Scenarios"]
+        U3["Opportunities"]
+        U4["Reasoning trace"]
+        U5["Approvals"]
+        U6["Purchase orders"]
+        U7["Evaluation"]
+    end
+
+    subgraph API["REST API · Next.js route handlers"]
+        direction LR
+        A1["/api/agent/run"]
+        A2["/api/approvals/:id"]
+        A3["/api/opportunities"]
+        A4["/api/evaluation"]
+    end
+
+    subgraph ORCH["Orchestrator · six-phase state machine"]
+        direction LR
+        P1["Triage"] --> P2["Investigate"] --> P3["Decide"]
+        P3 --> P4["Pre-validate"] --> P5["Act"] --> P6["Post-validate"]
+        P6 -.->|material drift| P7["Remediate<br/>max 2 attempts"]
+        P7 -.->|exhausted| P8["Escalate"]
+    end
+
+    subgraph BRAINS["Decision layer"]
+        direction LR
+        B1["LLM provider<br/>Gemini · Groq · OpenAI · Anthropic<br/><i>optional</i>"]
+        B2["Policy engine<br/><i>deterministic ground truth</i>"]
+        B3["Constraint engine<br/>hard + soft · maxFeasibleQty"]
+        B4["Autonomy gate<br/>auto / approve / escalate"]
+    end
+
+    TOOLS["Tool layer · 21 Zod-typed tools<br/>15 read · 6 write, gated and re-validating"]
+
+    subgraph DATA["State"]
+        direction LR
+        D1[("SQLite · 17 tables")]
+        D2["Mock supplier gateway<br/><i>with fault injection</i>"]
+        D3[("Audit log<br/>every mutation + run id")]
+    end
+
+    SWEEP["Opportunity sweep<br/><i>read-only portfolio scan</i>"]
+
+    UI --> API --> ORCH
+    ORCH --> BRAINS
+    BRAINS --> TOOLS
+    TOOLS --> DATA
+    A3 --> SWEEP
+    SWEEP --> D1
+    SWEEP -.->|hand a finding to the agent| A1
+
+    style ORCH fill:#eef2ff,stroke:#6c6c9e
+    style BRAINS fill:#f5f3ff,stroke:#8b7fc7
+    style DATA fill:#f0fdf4,stroke:#317562
+    style SWEEP fill:#fff7ed,stroke:#c2762a
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  UI  (Next.js App Router, React 19)                                          │
-│  Dashboard · Scenarios · Reasoning trace · Approvals · POs · Eval            │
-└───────────────────────────────┬──────────────────────────────────────────────┘
-                                │  REST
-┌───────────────────────────────▼──────────────────────────────────────────────┐
-│  ORCHESTRATOR — six-phase state machine                                      │
-│                                                                              │
-│   TRIAGE ─► INVESTIGATE ─► DECIDE ─► PRE-VALIDATE ─► ACT ─► POST-VALIDATE    │
-│                                                               │              │
-│                                              ┌────────────────┴───────────┐  │
-│                                              ▼                            ▼  │
-│                                        drift: none/benign          material  │
-│                                              │                            │  │
-│                                             done                    REMEDIATE│
-│                                                                     (max 2)  │
-│                                                                        │     │
-│                                                                   ESCALATE   │
-└──────┬─────────────────┬──────────────────┬───────────────────┬──────────────┘
-       │                 │                  │                   │
-┌──────▼──────┐  ┌───────▼───────┐  ┌───────▼────────┐  ┌───────▼──────────┐
-│ LLM layer   │  │ Policy engine │  │ Constraint     │  │ Autonomy gate    │
-│ (pluggable) │  │ (determinist- │  │ engine         │  │ auto / approve / │
-│ Gemini·Groq │  │  ic ground    │  │ hard + soft,   │  │ escalate         │
-│ OpenAI·Claude│  │  truth)      │  │ max-feasible   │  │                  │
-└──────┬──────┘  └───────┬───────┘  └───────┬────────┘  └───────┬──────────┘
-       │                 │                  │                   │
-       └─────────────────┴────────┬─────────┴───────────────────┘
-                                  │
-                   ┌──────────────▼───────────────┐
-                   │  TOOL LAYER — 21 typed tools │
-                   │  15 read · 6 write (gated)   │
-                   └──────────────┬───────────────┘
-                                  │
-          ┌───────────────────────┼────────────────────────┐
-          ▼                       ▼                        ▼
-   ┌─────────────┐        ┌──────────────┐        ┌────────────────┐
-   │   SQLite    │        │ Mock supplier│        │   Audit log    │
-   │ 17 tables   │        │   gateway    │        │ every mutation │
-   │             │        │ + fault      │        │ + run id       │
-   │             │        │   injection  │        │                │
-   └─────────────┘        └──────────────┘        └────────────────┘
+
+**The decision path for a single run:**
+
+```mermaid
+sequenceDiagram
+    participant B as Buyer
+    participant O as Orchestrator
+    participant L as LLM
+    participant P as Policy engine
+    participant C as Constraint engine
+    participant DB as SQLite
+    participant S as Supplier gateway
+
+    B->>O: situation (e.g. "buy 800 units")
+    O->>DB: read inventory, demand, POs, terms, budget, space
+    O->>L: investigate with read-only tools
+    L-->>O: proposal + rationale
+    O->>P: compute the answer independently
+    P-->>O: ground-truth quantity
+    Note over O: reconcile — hard breach or >15% divergence<br/>means the policy engine wins and<br/>confidence is capped
+    O->>C: pre-validate the reconciled action
+    C-->>O: pass / fail + maxFeasibleQty + binding constraint
+    O->>O: autonomy gate
+    alt exceeds autonomy band
+        O-->>B: park for approval
+        B->>O: approve
+    end
+    O->>S: submit order
+    S-->>O: "accepted" (may silently cap quantity)
+    O->>DB: re-read independently — NOT the gateway's reply
+    DB-->>O: actual confirmed quantity
+    Note over O: drift classified: none / benign / material / critical
+    alt material drift
+        O->>P: re-plan from current state
+        O->>S: corrective order, different supplier
+        O->>DB: verify again
+    end
+    O-->>B: outcome + full replayable trace
 ```
 
 A fuller write-up, including the data model and the reasoning behind each design choice, is in
@@ -296,9 +359,67 @@ problem and always bought something would score perfectly — which would tell y
 | **3 — Demand changed** | Complete | EXPEDITE 1,500 + full drift/remediation loop; promo case correctly NO_ACTION |
 | **4 — Purchasing constraint** | Complete | MODIFY to the storage-feasible 1,000, redirect the balance to another node |
 
-Beyond the four scenarios, the same architecture also covers alternate-supplier sourcing, supplier
-reliability scoring, expedite decisions, promotional-demand discrimination, multi-node overflow
-allocation, and open-PO reconciliation.
+---
+
+## Beyond the four scenarios — the opportunity sweep
+
+The four scenarios are all **reactive**: something lands on the buyer's desk and the agent responds.
+The larger part of a real buyer's day is noticing the things nobody flagged.
+
+`src/lib/domain/opportunities.ts` sweeps the whole portfolio and surfaces six classes of problem —
+covering most of the optional list in the brief:
+
+| Finding | What it catches | Assignment topic |
+|---|---|---|
+| **Replenishment** | Lines with a net requirement nobody has raised an order for, ranked by whether stock runs out before a replenishment could land | replenishment |
+| **Open purchase orders** | Unactioned supplier messages, confirmed-short lines, and overdue deliveries still counted as inbound cover | open purchase orders |
+| **Supplier reliability** | Realised fill rate computed from the order book, compared against the score planning actually uses | supplier reliability |
+| **Forecast anomalies** | Baselines that have drifted from reality — in both directions — separating promotion-explained lift from genuine change | forecast anomalies, promotional buying |
+| **Safety stock** | Buffers set from a round number, re-derived from demand and lead-time variability at a ~95% service level | safety stock |
+| **Overstock & spoilage** | Cover beyond the policy threshold, and quantities that will expire before they sell | seasonal / excess stock |
+
+Three properties make this more than a second dashboard:
+
+**It reuses the agent's own primitives.** `computeNetRequirement`, `detectDemandShift`,
+`spoilageRisk`, `listSupplierOptions` — the same functions, so a finding is computed exactly the way
+the agent would compute it. The visible consequence is that the sweep **independently rediscovers
+the assignment scenarios from raw data**: the 338-unit requirement behind Scenario 1, the
+unexplained demand change behind Scenario 3, the promotion that explains the one which looks
+identical, and the unactioned supplier message behind Scenario 2. None of them are hand-fed.
+
+**It hands findings back to the agent.** Each finding carries an agent-ready payload, so "Run
+review" on the Opportunities page sends it through the full pipeline — investigation, constraint
+checks, autonomy gate, execution, post-execution validation. Detection feeds decision.
+
+**It is strictly read-only.** Detection and action are kept apart deliberately. A sweep that quietly
+placed orders across the whole catalogue is precisely the unbounded autonomy the rest of the system
+exists to prevent.
+
+It also surfaces something the static seed cannot: **supplier reliability findings only appear after
+the agent has acted.** Once SUP-03 short-ships against a live order, its realised fill rate (48%)
+diverges from the score planning uses (79%), and the sweep flags it. The system's view of its
+suppliers is updated by its own experience.
+
+---
+
+## Mock services and data
+
+Everything needed to run the application is in the repository. There are no external dependencies
+and no accounts to create.
+
+| Component | What it is | Where |
+|---|---|---|
+| **Database** | SQLite, 17 tables, created on demand. No server to install. | `src/lib/db/schema.sql` |
+| **Dataset** | 3 fulfilment nodes, 5 products, 7 suppliers, 35 days of demand history, 3 open POs, 1 live supplier event, 1 active promotion, budgets and storage limits | `src/lib/db/seed.ts` |
+| **Supplier gateway** | Mock external system the agent submits orders to. Deliberately imperfect — SUP-03 silently caps any order at 400 units, SUP-05 refuses expedites it cannot service. | `src/lib/mock/supplier-gateway.ts` |
+| **Supplier inbox** | Inbound events (partial fulfilment, delay, cancellation). New ones can be injected at `POST /api/supplier-events` to create fresh situations. | `src/app/api/supplier-events/route.ts` |
+| **LLM providers** | Optional. Gemini, Groq, OpenAI, Anthropic over plain `fetch`. With no key the deterministic engine runs the whole pipeline. | `src/lib/agent/llm.ts` |
+
+Demand history is generated from a seeded PRNG, so every number — and therefore every assertion —
+is identical on every machine.
+
+The seed is tuned so that **the obvious answer is wrong in each scenario**. That is the point: an
+agent evaluated against data where the naive answer happens to be correct tells you nothing.
 
 ---
 
@@ -373,8 +494,10 @@ Worth stating plainly, since this was a one-day build:
 - **Single-process concurrency.** SQLite in WAL mode with no row locking. Two agents running
   simultaneously against the same node's budget could race. A real deployment would need
   transactional reservation of budget and storage.
-- **No lead-time distribution modelling.** `lead_time_stddev_days` is stored but unused; safety
-  stock is a fixed per-line figure rather than derived from demand and lead-time variance.
+- **Safety stock is a fixed figure in the planning path.** The opportunity sweep *derives* it from
+  demand and lead-time variability at a ~95% service level and flags lines that are mis-set, but
+  the replenishment maths still uses the stored per-line number. Closing that loop — having the
+  agent act on its own safety-stock findings — is the obvious next step.
 - **Promotion attribution is a single heuristic.** It compares observed uplift against the
   promotion's expected uplift with a 1.25× tolerance. Real attribution would need a counterfactual
   baseline.
@@ -383,3 +506,21 @@ Worth stating plainly, since this was a one-day build:
 - **The LLM path is the thinner one.** Most of the engineering is in the deterministic engine and
   the feedback loop, which is where I think the real value sits — but it does mean the model's
   contribution is mostly narrative and investigation sequencing rather than decision-making.
+
+---
+
+## Where each submission requirement lives
+
+| Requirement | Where |
+|---|---|
+| Complete source code | this repository — `src/`, `eval/`, `scripts/` |
+| Setup and run instructions | [Quick start](#quick-start), above |
+| Architecture diagram | [Architecture](#architecture) — three Mermaid diagrams, rendered inline by GitHub |
+| Description of the approach | [Approach](#approach) and [`docs/architecture.md`](docs/architecture.md) |
+| Test scenarios and evaluation approach | [Evaluation](#evaluation), `eval/cases.ts`, `npm run eval` |
+| Mock APIs, datasets, supporting services | [Mock services and data](#mock-services-and-data) — all in-repo, nothing external |
+| How agent decisions are validated | [The feedback loop](#the-feedback-loop) — pre-validation, expectation contracts, independent re-read, drift classification |
+| Working demo | [`DEMO.md`](DEMO.md) — `npm run demo` for the terminal, `npm run dev` for the UI, with screenshots |
+| `.env.example` | [`.env.example`](.env.example) — every variable documented, none required |
+| No secrets committed | no keys in the tree or in history; `.env*` is gitignored |
+| Additional buyer problems (optional) | [Beyond the four scenarios](#beyond-the-four-scenarios--the-opportunity-sweep) — six finding classes covering replenishment, open POs, supplier reliability, forecast anomalies, promotional buying and safety stock |

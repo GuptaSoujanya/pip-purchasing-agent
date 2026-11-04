@@ -26,15 +26,27 @@ So the system separates them explicitly, and puts the deterministic parts in cod
 
 The orchestrator (`src/lib/agent/orchestrator.ts`) is a state machine, not a chat loop.
 
-```
-TRIAGE ──► INVESTIGATE ──► DECIDE ──► PRE-VALIDATE ──► ACT ──► POST-VALIDATE
-                                                                     │
-                                       ┌─────────────────────────────┤
-                                       ▼                             ▼
-                                 none / benign                   material
-                                       │                             │
-                                     done                       REMEDIATE ──► ESCALATE
-                                                                (bounded)
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Triage
+    Triage --> Investigate: situation classified
+    Investigate --> Decide: evidence gathered
+    Decide --> PreValidate: proposal formed
+    PreValidate --> Decide: breach, re-plan at max feasible
+    PreValidate --> Act: constraints satisfied
+    Act --> AwaitApproval: autonomy gate says ask
+    Act --> Escalated: autonomy gate says escalate
+    AwaitApproval --> Act: buyer approves
+    AwaitApproval --> [*]: buyer rejects
+    Act --> PostValidate: written
+    PostValidate --> Completed: drift none / benign
+    PostValidate --> Remediate: drift material
+    Remediate --> PostValidate: re-planned & re-executed
+    Remediate --> Escalated: attempts exhausted
+    PostValidate --> Escalated: drift critical
+    Completed --> [*]
+    Escalated --> [*]
 ```
 
 | Phase | Responsibility |
