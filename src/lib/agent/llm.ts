@@ -11,6 +11,10 @@
  * dependency surface small and the request shapes visible.
  */
 
+import { spawn } from "node:child_process";
+import { accessSync, constants as fsConstants } from "node:fs";
+import { delimiter as pathDelimiter, join as pathJoin } from "node:path";
+
 export type LlmToolCall = { id: string; name: string; args: Record<string, unknown> };
 
 export type LlmMessage =
@@ -29,22 +33,52 @@ export interface LlmProvider {
   chat(messages: LlmMessage[], tools: LlmToolSpec[]): Promise<LlmResponse>;
 }
 
-export type ProviderId = "gemini" | "groq" | "openai" | "anthropic" | "none";
+export type ProviderId =
+  | "gemini"
+  | "groq"
+  | "openai"
+  | "anthropic"
+  | "claude-code"
+  | "none";
 
-/** Which provider to use, inferred from whichever key is present. */
+/**
+ * Which provider to use.
+ *
+ * Explicit `LLM_PROVIDER` wins. Otherwise an API key picks the provider, and
+ * failing that we look for a locally authenticated Claude Code CLI — which
+ * means a developer who already uses Claude Code gets real model reasoning
+ * with no key and no configuration at all. Deterministic mode is the last
+ * resort, not the default experience.
+ */
 export function resolveProviderId(): ProviderId {
   const explicit = process.env.LLM_PROVIDER?.toLowerCase() as ProviderId | undefined;
-  if (explicit && explicit !== "none") return explicit;
   if (explicit === "none") return "none";
+  if (explicit) return explicit;
   if (process.env.GEMINI_API_KEY) return "gemini";
   if (process.env.GROQ_API_KEY) return "groq";
   if (process.env.OPENAI_API_KEY) return "openai";
   if (process.env.ANTHROPIC_API_KEY) return "anthropic";
+  if (process.env.CLAUDE_CODE_BRIDGE !== "off" && claudeCodeBinary()) return "claude-code";
   return "none";
+}
+
+/** Human-readable description of how reasoning is currently configured. */
+export function describeProvider(): { id: ProviderId; label: string; real: boolean } {
+  const id = resolveProviderId();
+  const labels: Record<ProviderId, string> = {
+    gemini: `Google Gemini (${process.env.GEMINI_MODEL ?? "gemini-2.0-flash"})`,
+    groq: `Groq (${process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile"})`,
+    openai: `OpenAI (${process.env.OPENAI_MODEL ?? "gpt-4o-mini"})`,
+    anthropic: `Anthropic API (${process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-5"})`,
+    "claude-code": `Claude Code CLI bridge (${process.env.CLAUDE_CODE_MODEL ?? "haiku"}, local auth, no API key)`,
+    none: "Deterministic policy engine (no model configured)",
+  };
+  return { id, label: labels[id], real: id !== "none" };
 }
 
 export function getProvider(): LlmProvider | null {
   switch (resolveProviderId()) {
+    case "claude-code": return new ClaudeCodeProvider();
     case "gemini": return new GeminiProvider();
     case "groq": return new OpenAiCompatibleProvider({
       id: "groq",
@@ -64,6 +98,207 @@ export function getProvider(): LlmProvider | null {
 }
 
 const TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 60_000);
+
+// ---------------------------------------------------------------------------
+// Claude Code CLI bridge
+//
+// Uses a locally installed, already-authenticated `claude` CLI as the model
+// backend, so no API key is needed. The CLI has no tool-calling API, so tool
+// use is emulated: the tool catalogue and the conversation so far are rendered
+// into one prompt, and the model is asked to reply with a JSON object naming
+// the tool it wants. That object is parsed back into the same LlmResponse
+// shape the HTTP providers return, so the orchestrator cannot tell the
+// difference.
+//
+// The CLI is invoked with its own agentic behaviour switched off — no tools,
+// no dynamic system prompt — because what is wanted here is a completion, not
+// a second agent operating on the filesystem.
+// ---------------------------------------------------------------------------
+
+let cachedBinary: string | null | undefined;
+
+/** Absolute path to a `claude` executable on PATH, or null. */
+export function claudeCodeBinary(): string | null {
+  if (cachedBinary !== undefined) return cachedBinary;
+  cachedBinary = null;
+  const explicit = process.env.CLAUDE_CODE_BIN;
+  const candidates = explicit
+    ? [explicit]
+    : (process.env.PATH ?? "").split(pathDelimiter).filter(Boolean).map((dir) => pathJoin(dir, "claude"));
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      cachedBinary = candidate;
+      break;
+    } catch {
+      // not on this PATH entry; keep looking
+    }
+  }
+  return cachedBinary;
+}
+
+function renderToolCatalogue(tools: LlmToolSpec[]): string {
+  return tools
+    .map((t) => `- ${t.name}: ${t.description}\n  parameters: ${JSON.stringify(t.parameters)}`)
+    .join("\n");
+}
+
+function renderConversation(messages: LlmMessage[]): string {
+  const parts: string[] = [];
+  for (const m of messages) {
+    if (m.role === "system") continue;
+    if (m.role === "user") {
+      parts.push(`## Situation\n${m.content}`);
+    } else if (m.role === "assistant") {
+      const calls = (m.toolCalls ?? []).map((c) => `${c.name}(${JSON.stringify(c.args)})`).join(", ");
+      parts.push(`## You previously said\n${m.content || "(no commentary)"}${calls ? `\nYou called: ${calls}` : ""}`);
+    } else {
+      parts.push(`## Result of ${m.name}\n${m.content}`);
+    }
+  }
+  return parts.join("\n\n");
+}
+
+/** Pull the first balanced JSON object out of a model reply. */
+function extractJsonObject(raw: string): Record<string, unknown> | null {
+  let text = raw.trim();
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) text = fence[1].trim();
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(text.slice(start, i + 1)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+class ClaudeCodeProvider implements LlmProvider {
+  readonly id = "claude-code";
+  readonly model = process.env.CLAUDE_CODE_MODEL ?? "haiku";
+
+  async chat(messages: LlmMessage[], tools: LlmToolSpec[]): Promise<LlmResponse> {
+    const binary = claudeCodeBinary();
+    if (!binary) throw new Error("Claude Code CLI not found on PATH. Set CLAUDE_CODE_BIN or install it.");
+
+    const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
+
+    const prompt = [
+      "# How this works — read this first",
+      "",
+      "You are being driven by an automated harness, not chatting with a person.",
+      "You have NO direct tool access in this session, and you do not need any.",
+      "",
+      "You request a tool by emitting a JSON object naming it. The harness executes",
+      "the tool against the real database and sends you the result in the next turn.",
+      "This is how every tool below is called. Never reply that tools are unavailable",
+      "to you, and never ask the harness for permission or clarification — emit the",
+      "JSON and the harness will do the rest.",
+      "",
+      "# Tools available to you",
+      renderToolCatalogue(tools),
+      "",
+      "# Your instructions",
+      system,
+      "",
+      "# Conversation so far",
+      renderConversation(messages),
+      "",
+      "# Reply format — STRICT",
+      "Reply with ONE JSON object and nothing else. No prose outside it, no markdown fences.",
+      "",
+      'To call tools:  {"tool_calls":[{"name":"<tool>","args":{...}}],"text":"<why, one or two sentences>"}',
+      'When finished:  {"tool_calls":[],"text":"<your conclusion>"}',
+      "",
+      "Rules:",
+      "- Call only tools listed above, with exactly the parameters in their schema.",
+      "- You may call several independent tools in one reply.",
+      "- Do not invent numbers. Every figure must come from a tool result.",
+      "- Do not stop to ask questions. If you lack a fact, call the tool that supplies it.",
+    ].join("\n");
+
+    const stdout = await this.invoke(binary, prompt);
+
+    let envelope: Record<string, unknown>;
+    try {
+      envelope = JSON.parse(stdout) as Record<string, unknown>;
+    } catch {
+      throw new Error(`Claude Code CLI returned unparseable output: ${stdout.slice(0, 300)}`);
+    }
+    if (envelope.is_error) {
+      throw new Error(`Claude Code CLI reported an error: ${String(envelope.result).slice(0, 300)}`);
+    }
+
+    const body = extractJsonObject(String(envelope.result ?? ""));
+    if (!body) {
+      return { text: String(envelope.result ?? ""), toolCalls: [], raw: envelope };
+    }
+
+    const rawCalls = Array.isArray(body.tool_calls) ? body.tool_calls : [];
+    const toolCalls: LlmToolCall[] = rawCalls
+      .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+      .filter((c) => typeof c.name === "string")
+      .map((c, i) => ({
+        id: `cc_${Date.now().toString(36)}_${i}`,
+        name: String(c.name),
+        args: (c.args ?? c.arguments ?? {}) as Record<string, unknown>,
+      }));
+
+    return { text: typeof body.text === "string" ? body.text : "", toolCalls, raw: envelope };
+  }
+
+  private invoke(binary: string, prompt: string): Promise<string> {
+    const timeoutMs = Number(process.env.CLAUDE_CODE_TIMEOUT_MS ?? 180_000);
+    return new Promise((resolve, reject) => {
+      const child = spawn(
+        binary,
+        [
+          "-p",
+          "--output-format", "json",
+          "--model", this.model,
+          "--allowed-tools", "",
+          "--exclude-dynamic-system-prompt-sections",
+        ],
+        { stdio: ["pipe", "pipe", "pipe"], env: process.env },
+      );
+
+      let out = "";
+      let err = "";
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`Claude Code CLI timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+      child.stderr.on("data", (d: Buffer) => { err += d.toString(); });
+      child.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+      child.on("close", (code: number | null) => {
+        clearTimeout(timer);
+        if (code !== 0) reject(new Error(`Claude Code CLI exited ${code}: ${err.slice(0, 300)}`));
+        else resolve(out);
+      });
+
+      child.stdin.end(prompt);
+    });
+  }
+}
 
 async function postJson(url: string, body: unknown, headers: Record<string, string>) {
   const controller = new AbortController();

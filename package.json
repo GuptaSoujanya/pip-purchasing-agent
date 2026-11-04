@@ -11,7 +11,8 @@
     "db:reset": "tsx scripts/reset-db.ts",
     "eval": "tsx scripts/run-eval.ts",
     "eval:llm": "AGENT_MODE=llm tsx scripts/run-eval.ts",
-    "demo": "tsx scripts/demo.ts"
+    "demo": "tsx scripts/demo.ts",
+    "check:llm": "tsx scripts/check-llm.ts"
   },
   "dependencies": {
     "@tabler/icons-react": "^3.50.0",
