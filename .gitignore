@@ -22,3 +22,8 @@ eval/latest-report.json
 .vercel
 *.tsbuildinfo
 next-env.d.ts
+
+# Local tooling and scratch output — not part of the deliverable
+.agents/
+artifacts/
+.playwright-mcp/
