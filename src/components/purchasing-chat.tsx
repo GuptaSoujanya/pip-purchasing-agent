@@ -14,11 +14,26 @@ type Reply = {
   sources: string[];
 };
 
+type Telemetry = {
+  provider: string;
+  model: string;
+  streaming: boolean;
+  latencyMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
+  accepted?: boolean;
+  reason?: string;
+  detail?: string;
+};
+
 type Message = {
   id: number;
   role: "user" | "assistant";
   content: string;
   reply?: Reply;
+  streaming?: boolean;
+  telemetry?: Telemetry;
 };
 
 const PROMPTS: { icon: IconName; label: string; prompt: string }[] = [
@@ -94,6 +109,46 @@ function readReply(value: unknown): Reply {
           .slice(0, 12)
       : [],
   };
+}
+
+function ProvenanceStrip({ telemetry }: { telemetry: Telemetry }) {
+  const facts: string[] = [telemetry.provider, telemetry.model];
+  if (telemetry.streaming) facts.push("streamed");
+  if (typeof telemetry.latencyMs === "number")
+    facts.push(`${(telemetry.latencyMs / 1000).toFixed(1)}s`);
+  if (
+    typeof telemetry.inputTokens === "number" ||
+    typeof telemetry.outputTokens === "number"
+  )
+    facts.push(
+      `${(telemetry.inputTokens ?? 0).toLocaleString("en-US")} in / ${(
+        telemetry.outputTokens ?? 0
+      ).toLocaleString("en-US")} out`,
+    );
+  if (typeof telemetry.costUsd === "number" && telemetry.costUsd > 0)
+    facts.push(`$${telemetry.costUsd.toFixed(4)}`);
+  const rejected = telemetry.accepted === false;
+  return (
+    <div className="pc-provenance" aria-label="Model call details">
+      <ul>
+        {facts.map((fact, index) => (
+          <li key={`${index}-${fact}`}>{fact}</li>
+        ))}
+      </ul>
+      {rejected && telemetry.reason && (
+        <p className="pc-provenance-note">
+          Streamed draft rejected and replaced with the verified answer —{" "}
+          {telemetry.reason}
+          {telemetry.detail ? ` (${telemetry.detail})` : ""}
+        </p>
+      )}
+      {telemetry.accepted === true && (
+        <p className="pc-provenance-note pc-provenance-note--ok">
+          Streamed reply passed the verified-answer check.
+        </p>
+      )}
+    </div>
+  );
 }
 
 export function PurchasingChat({
@@ -206,34 +261,109 @@ export function PurchasingChat({
         context = context.slice(1);
         body = JSON.stringify({ messages: context });
       }
-      const response = await fetch("/api/chat", {
+      const response = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
         signal: controller.signal,
       });
-      if (!response.ok)
+      if (!response.ok || !response.body)
         throw new Error(
           response.status === 429
             ? "Pip is receiving too many requests. Try again in a moment."
             : "Pip couldn’t load the workspace data. Please try again.",
         );
-      const payload: unknown = await response.json().catch(() => {
+
+      const slotId = nextId.current++;
+      let slot: Message = {
+        id: slotId,
+        role: "assistant",
+        content: "",
+        streaming: true,
+      };
+      const publish = () => {
+        const next = [...updated, { ...slot }];
+        history.current = next;
+        setMessages(next);
+      };
+      publish();
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let settled = false;
+
+      // Server-sent events arrive on arbitrary chunk boundaries, so a partial
+      // frame has to survive until its terminator shows up in a later chunk.
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let split = buffer.indexOf("\n\n");
+        while (split !== -1) {
+          const frame = buffer.slice(0, split).trim();
+          buffer = buffer.slice(split + 2);
+          split = buffer.indexOf("\n\n");
+          if (!frame.startsWith("data:")) continue;
+          let event: Record<string, unknown>;
+          try {
+            event = JSON.parse(frame.slice(5).trim()) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          if (disposed.current || controller.signal.aborted) return;
+          if (event.type === "meta") {
+            slot = {
+              ...slot,
+              telemetry: {
+                provider: String(event.provider ?? "unknown"),
+                model: String(event.model ?? "unknown"),
+                streaming: event.streaming !== false,
+              },
+            };
+            publish();
+          } else if (event.type === "delta") {
+            slot = { ...slot, content: slot.content + String(event.text ?? "") };
+            publish();
+          } else if (event.type === "settled") {
+            const reply = readReply(event.reply);
+            const usage = (event.usage ?? {}) as Record<string, unknown>;
+            slot = {
+              ...slot,
+              content: reply.message,
+              reply,
+              streaming: false,
+              telemetry: {
+                provider: slot.telemetry?.provider ?? "none",
+                model: slot.telemetry?.model ?? "—",
+                streaming: slot.telemetry?.streaming ?? false,
+                latencyMs:
+                  typeof event.latencyMs === "number" ? event.latencyMs : undefined,
+                inputTokens:
+                  typeof usage.inputTokens === "number" ? usage.inputTokens : undefined,
+                outputTokens:
+                  typeof usage.outputTokens === "number" ? usage.outputTokens : undefined,
+                costUsd: typeof usage.costUsd === "number" ? usage.costUsd : undefined,
+                accepted: event.accepted === true,
+                reason:
+                  typeof event.reason === "string" ? event.reason : undefined,
+                detail:
+                  typeof event.detail === "string" ? event.detail : undefined,
+              },
+            };
+            publish();
+            settled = true;
+          } else if (event.type === "error") {
+            throw new Error(
+              typeof event.message === "string"
+                ? event.message
+                : "Pip returned an incomplete reply. Please try again.",
+            );
+          }
+        }
+      }
+      if (!settled)
         throw new Error("Pip returned an incomplete reply. Please try again.");
-      });
-      const reply = readReply(payload);
-      if (disposed.current || controller.signal.aborted) return;
-      const complete: Message[] = [
-        ...updated,
-        {
-          id: nextId.current++,
-          role: "assistant",
-          content: reply.message,
-          reply,
-        },
-      ];
-      history.current = complete;
-      setMessages(complete);
       pendingRetry.current = null;
       if (!nearBottom.current) setShowNewReply(true);
     } catch (cause) {
@@ -258,8 +388,11 @@ export function PurchasingChat({
   }, []);
 
   useEffect(() => {
-    if (!initialPrompt?.trim() || lastInitialPrompt.current === initialPrompt)
+    if (!initialPrompt?.trim()) {
+      lastInitialPrompt.current = "";
       return;
+    }
+    if (lastInitialPrompt.current === initialPrompt) return;
     const timer = setTimeout(() => {
       if (inFlight.current) return;
       lastInitialPrompt.current = initialPrompt;
@@ -399,13 +532,23 @@ export function PurchasingChat({
                     <div className="pc-message-author">
                       Pip
                       <span>
-                        {message.reply?.mode === "llm"
-                          ? "AI-assisted · Live data"
-                          : "Workspace snapshot"}
+                        {message.streaming
+                          ? "Streaming from the model…"
+                          : message.reply?.mode === "llm"
+                            ? "AI-assisted · Live data"
+                            : "Workspace snapshot"}
                       </span>
                     </div>
                   )}
-                  <div className="pc-message-text">{message.content}</div>
+                  {message.telemetry && (
+                    <ProvenanceStrip telemetry={message.telemetry} />
+                  )}
+                  <div className="pc-message-text">
+                    {message.content}
+                    {message.streaming && (
+                      <span className="pc-caret" aria-hidden="true" />
+                    )}
+                  </div>
                   {message.reply && message.reply.actions.length > 0 && (
                     <div
                       className="pc-action-links"
@@ -415,6 +558,7 @@ export function PurchasingChat({
                         <Link
                           href={action.href}
                           key={`${action.href}-${action.label}`}
+                          onNavigate={onClose}
                         >
                           {action.label}
                           <Icon name="arrow" size={16} />
@@ -442,7 +586,7 @@ export function PurchasingChat({
             ))}
           </div>
         )}
-        {busy && (
+        {busy && messages.at(-1)?.role !== "assistant" && (
           <div className="pc-thinking" role="status">
             <span className="pc-thinking-dot" />
             <span>Checking your workspace…</span>
