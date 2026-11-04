@@ -84,7 +84,7 @@ export default async function RunPage({
     <>
       <Link
         href="/runs"
-        className="mb-5 inline-flex min-h-11 items-center text-sm font-medium text-emerald-800 hover:underline"
+        className="mb-5 inline-flex min-h-11 items-center text-sm font-medium text-link"
       >
         ← All agent runs
       </Link>
@@ -249,7 +249,7 @@ export default async function RunPage({
               </div>
               <Link
                 href="/approvals"
-                className="mt-3 inline-block text-[12px] text-emerald-800 hover:underline"
+                className="mt-3 inline-block text-[12px] text-link"
               >
                 Approval queue →
               </Link>
@@ -275,7 +275,7 @@ function StepCard({ step }: { step: ReturnType<typeof getSteps>[number] }) {
         </span>
         <div className="min-w-0 flex-1">
           {step.tool_name && (
-            <span className="mono mr-2 break-all rounded bg-stone-50 px-1.5 py-0.5 text-[11px] text-emerald-900">
+            <span className="mono mr-2 break-all rounded bg-stone-50 px-1.5 py-0.5 text-[11px] text-violet-800">
               {step.tool_name}
             </span>
           )}
@@ -288,9 +288,6 @@ function StepCard({ step }: { step: ReturnType<typeof getSteps>[number] }) {
             {step.duration_ms}ms
           </span>
         )}
-        <span className="shrink-0 text-stone-600 transition group-open:rotate-90">
-          ›
-        </span>
       </summary>
       <div className="space-y-2 border-t border-edge px-3 py-2.5">
         {input && (

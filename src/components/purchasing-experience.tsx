@@ -1,326 +1,370 @@
 "use client";
-import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "./icons";
-import { PurchasingChat } from "./purchasing-chat";
+import { Mascot } from "./companion";
+import { usePurchasingAssistant } from "./workspace-shell";
 import "./purchasing-experience.css";
 
-const PurchasingWorld = dynamic(
-  () => import("./purchasing-world").then((module) => module.PurchasingWorld),
+const PipSupplySculpture = dynamic(
+  () => import("./pip-supply-sculpture").then((m) => m.PipSupplySculpture),
   { ssr: false },
 );
-const TOPICS = [
-  {
-    label: "Stock signals",
-    title: (
-      <>
-        See the signal.
-        <br />
-        Stay one step ahead.
-      </>
-    ),
-    description:
-      "Find the stock that needs your attention. Understand the demand behind it before you decide.",
-    prompt:
-      "Which stock positions need attention, and what should I review first?",
-    action: "Explore stock signals",
-  },
-  {
-    label: "Supplier surprises",
-    title: (
-      <>
-        A change of plan.
-        <br />A clearer way forward.
-      </>
-    ),
-    description:
-      "Uncover supplier gaps, review your options, and keep your next delivery on course.",
-    prompt: "What supplier updates or delivery risks should I review?",
-    action: "Review supplier updates",
-  },
-  {
-    label: "Smarter spending",
-    title: (
-      <>
-        Know your limits.
-        <br />
-        Find your possibilities.
-      </>
-    ),
-    description:
-      "See the budget behind every decision. Balance what you need with the room you have.",
-    prompt:
-      "How much purchasing budget is available at each location, and what is already committed?",
-    action: "Explore my budget",
-  },
-];
 
-type Props = {
-  stockAlerts: number;
-  supplierUpdates: number;
+export type PurchasingNode = {
+  id: string;
+  name: string;
+  city: string;
   availableBudget: number;
-  pendingApprovals: number;
-  simulatedDate: string;
+  usedCapacity: number;
+  lowestCover: number | null;
+  alerts: number;
+  positions: number;
+  risks: { name: string; cover: number | null }[];
 };
+const currency = (value: number) =>
+  value.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  });
+
 export function PurchasingExperience({
+  nodes,
   stockAlerts,
   supplierUpdates,
-  availableBudget,
   pendingApprovals,
+  openOrders,
   simulatedDate,
-}: Props) {
-  const [phase, setPhase] = useState<"intro" | "explore" | "chat">("intro");
-  const [scene, setScene] = useState(0);
-  const [initialPrompt, setInitialPrompt] = useState<string>();
-  const [hasExplored, setHasExplored] = useState(false);
-  const [returnPhase, setReturnPhase] = useState<"intro" | "explore">("intro");
-  const heading = useRef<HTMLHeadingElement>(null);
-  const activate = useRef<HTMLButtonElement>(null);
-  const chatLayer = useRef<HTMLElement>(null);
-  const chatTrigger = useRef<HTMLElement | null>(null);
-  const phaseRef = useRef(phase);
+}: {
+  nodes: PurchasingNode[];
+  stockAlerts: number;
+  supplierUpdates: number;
+  pendingApprovals: number;
+  openOrders: number;
+  simulatedDate: string;
+}) {
+  const { openChat, selectedNode, setSelectedNode } = usePurchasingAssistant();
+  const [visible, setVisible] = useState(true);
+  const scene = useRef<HTMLDivElement>(null);
+  const node = nodes[selectedNode] ?? nodes[0];
+  const lowest = [...nodes]
+    .filter((n) => n.lowestCover !== null)
+    .sort(
+      (a, b) => (a.lowestCover ?? Infinity) - (b.lowestCover ?? Infinity),
+    )[0];
   useEffect(() => {
-    phaseRef.current = phase;
-  }, [phase]);
-  const openChat = useCallback((prompt?: string) => {
-    if (phaseRef.current === "chat") {
-      chatLayer.current?.querySelector("textarea")?.focus();
-      return;
-    }
-    chatTrigger.current =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    setReturnPhase(phaseRef.current === "explore" ? "explore" : "intro");
-    setInitialPrompt(prompt);
-    setPhase("chat");
+    if (!scene.current) return;
+    const observer = new IntersectionObserver(([entry]) =>
+      setVisible(entry.isIntersecting),
+    );
+    observer.observe(scene.current);
+    return () => observer.disconnect();
   }, []);
-  const explore = () => {
-    setHasExplored(true);
-    setPhase("explore");
-  };
-  const closeChat = useCallback(() => {
-    setPhase(returnPhase);
-    requestAnimationFrame(() => {
-      const target = chatTrigger.current;
-      if (target?.isConnected) target.focus();
-      else activate.current?.focus();
-    });
-  }, [returnPhase]);
-  useEffect(() => {
-    if (phase === "chat")
-      requestAnimationFrame(() =>
-        chatLayer.current
-          ?.querySelector("textarea")
-          ?.focus({ preventScroll: true }),
-      );
-  }, [phase]);
-  const changeScene = useCallback(
-    (next: number) => setScene((next + TOPICS.length) % TOPICS.length),
-    [],
+  const date = new Date(simulatedDate + "T12:00:00Z").toLocaleDateString(
+    "en-GB",
+    { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" },
   );
-  useEffect(() => {
-    if (phase === "explore") heading.current?.focus({ preventScroll: true });
-    const onKey = (event: KeyboardEvent) => {
-      if (phase === "chat" && event.key === "Escape") {
-        event.preventDefault();
-        closeChat();
-        return;
-      }
-      if (
-        phase !== "explore" ||
-        event.target instanceof HTMLInputElement ||
-        event.target instanceof HTMLTextAreaElement
-      )
-        return;
-      if (event.key === "ArrowRight") {
-        event.preventDefault();
-        changeScene(scene + 1);
-      }
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        changeScene(scene - 1);
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [phase, scene, changeScene, closeChat]);
-  const topic = TOPICS[scene];
-  const signals = [
-    `${stockAlerts} stock ${stockAlerts === 1 ? "position" : "positions"} to review`,
-    `${supplierUpdates} supplier ${supplierUpdates === 1 ? "update" : "updates"}`,
-    `${availableBudget.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })} available`,
-  ];
   return (
-    <div
-      className={`purchasing-experience experience-${phase}`}
-      data-scene={scene}
+    <section
+      id="workspace"
+      className="studio-overview"
+      aria-labelledby="studio-title"
     >
-      <div className="experience-aurora" aria-hidden="true" />
-      <div className="experience-grain" aria-hidden="true" />
-      {hasExplored && (
-        <div className="experience-world" aria-hidden="true">
-          <PurchasingWorld
-            activeScene={scene}
-            onActivate={() => openChat(topic.prompt)}
+      <div className="studio-issue-line">
+        <span>
+          <i />
+          PURCHASING, WITH PERSPECTIVE.
+        </span>
+        <span>
+          {date}
+          <b>SIMULATION</b>
+        </span>
+      </div>
+      <div className="studio-hero">
+        <div className="studio-hero-copy">
+          <div className="studio-edition">
+            <span>THE BUYER’S VIEW</span>
+            <span>01 — 08</span>
+          </div>
+          <h1 id="studio-title">
+            <span>Make your</span>
+            <span>next move</span>
+            <span className="studio-title-accent">
+              count<span className="studio-period">.</span>
+            </span>
+          </h1>
+          <p className="studio-hero-intro">
+            A little foresight goes a long way.
+            <br />
+            See the signals. Weigh your options.
+            <br />
+            Make a purchase you can explain.
+          </p>
+          <div className="studio-hero-actions">
+            <Link
+              href={pendingApprovals ? "/approvals" : "/opportunities"}
+              className="studio-action"
+            >
+              <span>
+                {pendingApprovals
+                  ? "Review " +
+                    pendingApprovals +
+                    (pendingApprovals === 1 ? " decision" : " decisions")
+                  : "Find your next move"}
+              </span>
+              <i>
+                <Icon name="arrow-up-right" size={21} />
+              </i>
+            </Link>
+            <Link href="/scenarios" className="studio-secondary-action">
+              Explore the scenario lab <Icon name="arrow" size={17} />
+            </Link>
+          </div>
+          <div className="studio-hero-footnote">
+            <Icon name="shield" size={15} />
+            <span>Evidence before action. A check after every move.</span>
+          </div>
+        </div>
+        <div className="studio-hero-art" ref={scene}>
+          <div className="studio-art-reference">
+            <span>YOUR SUPPLY NETWORK</span>
+            <span>
+              {String(nodes.length).padStart(2, "0")} LOCATIONS / ONE PICTURE
+            </span>
+          </div>
+          <PipSupplySculpture
+            nodes={nodes}
+            selectedNode={selectedNode}
+            onSelectNode={setSelectedNode}
+            paused={!visible}
           />
+          <div className="studio-art-note">
+            <span className="studio-note-orbit">
+              <Icon name="arrow-up-right" size={22} />
+            </span>
+            <span>
+              Everything
+              <br />
+              is connected.
+            </span>
+          </div>
+        </div>
+      </div>
+      {node && (
+        <div className="studio-location-strip" key={node.id}>
+          <div className="studio-location-name">
+            <span className="studio-location-index">0{selectedNode + 1}</span>
+            <div>
+              <span>LOCATION IN FOCUS</span>
+              <strong>{node.name}</strong>
+            </div>
+          </div>
+          <div className="studio-location-stat">
+            <span>Shortest stock cover</span>
+            <strong>
+              {node.lowestCover === null ? "—" : node.lowestCover}
+              <small>{node.lowestCover === null ? "" : " days"}</small>
+            </strong>
+          </div>
+          <div className="studio-location-stat">
+            <span>Available budget</span>
+            <strong>{currency(node.availableBudget)}</strong>
+          </div>
+          <div className="studio-location-stat studio-location-storage">
+            <span>Space in use</span>
+            <div>
+              <strong>
+                {node.usedCapacity}
+                <small>%</small>
+              </strong>
+              <div
+                className="studio-capacity-track"
+                role="meter"
+                aria-label={node.name + " storage used"}
+                aria-valuenow={node.usedCapacity}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <span
+                  style={{ width: Math.min(100, node.usedCapacity) + "%" }}
+                />
+              </div>
+            </div>
+          </div>
+          <Link
+            href={"/inventory?location=" + node.id}
+            className="studio-location-link"
+          >
+            Explore stock
+            <Icon name="arrow-up-right" size={21} />
+          </Link>
         </div>
       )}
-      <a className="skip-link" href="#experience-main">
-        Skip to experience
-      </a>
-      <header className="experience-header">
+
+      <section className="studio-radar" aria-labelledby="studio-radar-title">
+        <header className="studio-section-heading">
+          <div>
+            <span className="studio-section-index">
+              01 / THE OPERATING PICTURE
+            </span>
+            <h2 id="studio-radar-title">
+              On your radar<span>.</span>
+            </h2>
+          </div>
+          <p>
+            The details worth your attention.
+            <br />
+            Straight from your workspace.
+          </p>
+          <a href="#operations" aria-label="Jump to stock watch and budget">
+            <Icon name="arrow" size={23} />
+          </a>
+        </header>
+        <div className="studio-radar-grid">
+          <Link
+            href={lowest ? "/inventory?location=" + lowest.id : "/inventory"}
+            className="studio-signal studio-signal-stock"
+          >
+            <div className="studio-signal-top">
+              <span>STOCK / COVERAGE</span>
+              <Icon name="arrow-up-right" size={26} />
+            </div>
+            <h3>
+              {stockAlerts
+                ? "Catch the gap.\nBefore it grows."
+                : "Room to breathe.\nStock is on track."}
+            </h3>
+            <div
+              className="studio-cover-graphic"
+              role="img"
+              aria-label={
+                lowest?.lowestCover != null
+                  ? `Lowest stock coverage: ${lowest.lowestCover} days in ${lowest.city}, against a 12-day review threshold.`
+                  : "Stock coverage is unavailable. The review threshold is 12 days."
+              }
+            >
+              <span
+                style={{
+                  width:
+                    Math.max(
+                      0,
+                      Math.min(100, ((lowest?.lowestCover ?? 0) / 30) * 100),
+                    ) + "%",
+                }}
+              />
+              <i />
+              <b>12d target</b>
+              <em>
+                {lowest?.lowestCover === null || !lowest
+                  ? "—"
+                  : lowest.lowestCover + "d"}
+              </em>
+            </div>
+            <div className="studio-signal-bottom">
+              <strong>{String(stockAlerts).padStart(2, "0")}</strong>
+              <span>
+                stock {stockAlerts === 1 ? "signal" : "signals"}
+                <small>
+                  {lowest
+                    ? "Lowest cover in " + lowest.city
+                    : "Across your locations"}
+                </small>
+              </span>
+            </div>
+          </Link>
+          <Link
+            href={supplierUpdates ? "/scenarios#s2" : "/purchase-orders"}
+            className="studio-signal studio-signal-supply"
+          >
+            <div className="studio-signal-top">
+              <span>SUPPLY / CHANGES</span>
+              <Icon name="arrow-up-right" size={26} />
+            </div>
+            <h3>
+              {supplierUpdates
+                ? "The plan changed.\nLet’s respond."
+                : "No loose ends.\nSupply is in view."}
+            </h3>
+            <div className="studio-supply-glyph" aria-hidden="true">
+              <Icon name="box" size={48} />
+              <span />
+              <Icon name="workflow" size={48} />
+              <span />
+              <Icon name="check" size={48} />
+            </div>
+            <div className="studio-signal-bottom">
+              <strong>{String(supplierUpdates).padStart(2, "0")}</strong>
+              <span>
+                supplier {supplierUpdates === 1 ? "update" : "updates"}
+                <small>Reconcile what’s confirmed</small>
+              </span>
+            </div>
+          </Link>
+          <Link
+            href="/purchase-orders"
+            className="studio-signal studio-signal-orders"
+          >
+            <div className="studio-signal-top">
+              <span>ORDERS / IN MOTION</span>
+              <Icon name="arrow-up-right" size={26} />
+            </div>
+            <h3>
+              From a good call.
+              <br />
+              To a real delivery.
+            </h3>
+            <div className="studio-order-glyph" aria-hidden="true">
+              <span>PO</span>
+              <i />
+              <span>
+                <Icon name="arrow-up-right" size={54} />
+              </span>
+            </div>
+            <div className="studio-signal-bottom">
+              <strong>{String(openOrders).padStart(2, "0")}</strong>
+              <span>
+                open {openOrders === 1 ? "order" : "orders"}
+                <small>Track the next handoff</small>
+              </span>
+            </div>
+          </Link>
+        </div>
+      </section>
+      <div className="studio-briefing">
+        <div className="studio-briefing-mascot">
+          <Mascot compact />
+        </div>
+        <div>
+          <span>YOUR THINKING PARTNER</span>
+          <h2>A second opinion, one conversation away.</h2>
+        </div>
         <button
           type="button"
-          className="experience-wordmark"
-          onClick={() => setPhase("intro")}
-          aria-label="Purchasing home"
+          onClick={() =>
+            openChat(
+              "What should I focus on in this purchasing workspace, and what evidence should I review first?",
+            )
+          }
         >
-          purchasing
-          <span />
-          Pip
+          Talk it through with Pip
+          <Icon name="arrow-up-right" size={20} />
         </button>
-        <nav aria-label="Experience navigation">
-          <Link href="/dashboard" className="workspace-link">
-            Open workspace
-            <Icon name="arrow-up-right" size={14} />
-          </Link>
-          <button
-            type="button"
-            className="experience-ask"
-            onClick={() => openChat()}
-          >
-            Ask Pip
-            <Icon name="arrow" size={15} />
-          </button>
-        </nav>
-      </header>
-      <main id="experience-main" className="experience-main">
-        {phase === "intro" && (
-          <section className="intro-stage" aria-labelledby="intro-title">
-            <article className="experience-intro-card">
-              <div className="intro-art" aria-hidden="true">
-                <PurchasingWorld miniature />
-                <span className="intro-art-haze" />
-              </div>
-              <div className="intro-card-copy">
-                <h1 id="intro-title">
-                  Ready for a smarter
-                  <br />
-                  buying decision?
-                </h1>
-                <p>
-                  Stock signals. Supplier surprises. Your next move.
-                  <br />
-                  Explore your purchasing world with Pip, and turn questions
-                  into a clear way forward.
-                </p>
-                <button
-                  ref={activate}
-                  type="button"
-                  className="intro-explore-button"
-                  onClick={explore}
-                >
-                  Explore
-                  <Icon name="arrow" size={16} />
-                </button>
-              </div>
-            </article>
-            <button
-              className="intro-chat-link"
-              type="button"
-              onClick={() => openChat()}
-            >
-              Have a question? Ask Pip directly
-              <Icon name="arrow-up-right" size={14} />
-            </button>
-          </section>
-        )}
-        {phase === "explore" && (
-          <section className="topic-scene" aria-labelledby="topic-title">
-            <div className="topic-copy" key={scene}>
-              <span className="topic-number">0{scene + 1} / 03</span>
-              <h1 id="topic-title" ref={heading} tabIndex={-1}>
-                {topic.title}
-              </h1>
-              <p>{topic.description}</p>
-            </div>
-            <button
-              type="button"
-              className="scene-arrow scene-previous"
-              onClick={() => changeScene(scene - 1)}
-              aria-label="Previous topic"
-            >
-              <Icon name="arrow" size={21} />
-            </button>
-            <button
-              type="button"
-              className="scene-arrow scene-next"
-              onClick={() => changeScene(scene + 1)}
-              aria-label="Next topic"
-            >
-              <Icon name="arrow" size={21} />
-            </button>
-            <div className="world-action">
-              <span className="world-signal">{signals[scene]}</span>
-              <button
-                ref={activate}
-                type="button"
-                onClick={() => openChat(topic.prompt)}
-              >
-                {topic.action}
-                <Icon name="arrow-up-right" size={17} />
-              </button>
-            </div>
-          </section>
-        )}
-        <section
-          ref={chatLayer}
-          className="experience-chat-layer"
-          hidden={phase !== "chat"}
-          aria-label="Purchasing assistant"
-        >
-          <div className="experience-chat-intro">
-            <span>YOUR PURCHASING COMPANION</span>
-            <h1>Let’s find your next move.</h1>
-          </div>
-          <PurchasingChat initialPrompt={initialPrompt} onClose={closeChat} />
-        </section>
-      </main>
-      <footer className="experience-footer">
-        <span className="experience-data-note">
-          Live workspace · Simulated {simulatedDate}
-        </span>
-        <div
-          className="experience-topic-nav"
-          role="group"
-          aria-label="Purchasing topics"
-        >
-          {TOPICS.map((item, index) => (
-            <button
-              key={item.label}
-              type="button"
-              aria-label={`${item.label}, topic ${index + 1} of 3`}
-              aria-pressed={scene === index && phase === "explore"}
-              onClick={() => {
-                setHasExplored(true);
-                setScene(index);
-                setPhase("explore");
-              }}
-            >
-              <span className="topic-nav-dot" />
-              <span className="topic-nav-label">{item.label}</span>
-            </button>
-          ))}
+      </div>
+      <header className="studio-section-heading studio-operations-heading">
+        <div>
+          <span className="studio-section-index">02 / UNDER THE SURFACE</span>
+          <h2>
+            The working details<span>.</span>
+          </h2>
         </div>
-        <Link className="experience-approvals" href="/approvals">
-          {pendingApprovals
-            ? `${pendingApprovals} pending approvals`
-            : "You’re in control"}
-          <Icon name="shield" size={14} />
-        </Link>
-      </footer>
-    </div>
+        <p>
+          Stock, spending and every decision.
+          <br />
+          The evidence is all here.
+        </p>
+      </header>
+    </section>
   );
 }

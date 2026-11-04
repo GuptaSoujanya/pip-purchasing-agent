@@ -45,7 +45,11 @@ export function Panel({
           {right}
         </header>
       )}
-      <div className="panel-content">{children}</div>
+      <div
+        className={`panel-content ${!title && !right ? "panel-content-bare" : ""}`}
+      >
+        {children}
+      </div>
     </section>
   );
 }
@@ -212,10 +216,7 @@ export function RunLink({
   children?: ReactNode;
 }) {
   return (
-    <Link
-      href={`/runs/${id}`}
-      className="mono text-emerald-800 underline-offset-4 hover:underline"
-    >
+    <Link href={`/runs/${id}`} className="mono text-link">
       {children ?? id}
     </Link>
   );

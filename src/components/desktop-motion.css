@@ -1,0 +1,97 @@
+.desktop-motion {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  pointer-events: none !important;
+  opacity: 0;
+  contain: layout style;
+  transition: opacity 100ms ease;
+}
+.desktop-motion[data-visible="true"] {
+  opacity: 1;
+}
+.desktop-motion-ring,
+.desktop-motion-point {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none !important;
+  will-change: transform;
+}
+.desktop-motion-point > span {
+  display: block;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px;
+  border: 1px solid #2449ef;
+  border-radius: 50%;
+  background: #2449ef;
+  box-shadow: 0 1px 5px #20231f20;
+  transition: transform 140ms ease;
+}
+.desktop-motion-ring > span {
+  display: block;
+  width: 29px;
+  height: 29px;
+  margin: -14.5px;
+  border: 1px solid #20231f70;
+  border-radius: 50%;
+  background: #2449ef08;
+  box-shadow: 0 0 0 1px #fffdf814;
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.75, 0.2, 1),
+    background-color 180ms ease,
+    border-color 180ms ease;
+}
+.desktop-motion[data-actionable="true"] .desktop-motion-ring > span {
+  transform: scale(1.45);
+  border-color: #f6623e;
+  background: #f6623e18;
+}
+.desktop-motion[data-pressed="true"] .desktop-motion-ring > span {
+  transform: scale(0.82);
+}
+.desktop-motion[data-pressed="true"] .desktop-motion-point > span {
+  transform: scale(0.8);
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  html[data-desktop-cursor="active"],
+  html[data-desktop-cursor="active"] * {
+    cursor: none !important;
+  }
+  html[data-desktop-motion="enabled"]
+    :where(button, [role="button"]):not(:disabled):not([aria-disabled="true"]) {
+    transition:
+      translate 160ms cubic-bezier(0.2, 0.75, 0.2, 1),
+      background-color 160ms ease,
+      border-color 160ms ease,
+      color 160ms ease,
+      box-shadow 160ms ease;
+  }
+  html[data-desktop-motion="enabled"]
+    :where(button, [role="button"]):not(:disabled):not(
+      [aria-disabled="true"]
+    ):hover {
+    translate: 0 -1px;
+  }
+  html[data-desktop-motion="enabled"]
+    :where(button, [role="button"]):not(:disabled):not(
+      [aria-disabled="true"]
+    ):active {
+    translate: 0 0;
+  }
+  html[data-desktop-motion="enabled"] :where(tbody tr) {
+    transition: background-color 160ms ease;
+  }
+  html[data-desktop-motion="enabled"] :where(tbody tr:hover) {
+    background-color: #d9ed8220;
+  }
+}
+@media (hover: none), (pointer: coarse), (prefers-reduced-motion: reduce) {
+  .desktop-motion {
+    display: none;
+  }
+}

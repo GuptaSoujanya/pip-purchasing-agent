@@ -3,6 +3,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Badge } from "./ui";
 import { Icon } from "./icons";
+import { PurchasingSelect } from "./purchasing-select";
 
 type StockLine = {
   node_id: string;
@@ -59,20 +60,16 @@ export function InventoryWatch({ stock }: { stock: StockLine[] }) {
             All stock <span>{stock.length}</span>
           </button>
         </div>
-        <label className="location-filter">
-          <span className="sr-only">Filter by location</span>
-          <select
-            value={node}
-            onChange={(event) => setNode(event.target.value)}
-          >
-            <option value="all">All locations</option>
-            {locations.map(([id, name]) => (
-              <option key={id} value={id}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <PurchasingSelect
+          className="location-filter"
+          label="Filter by location"
+          value={node}
+          onChange={setNode}
+          options={[
+            { value: "all", label: "All locations" },
+            ...locations.map(([id, name]) => ({ value: id, label: name })),
+          ]}
+        />
       </div>
       <p className="sr-only" role="status">
         Showing {visible.length} stock positions.

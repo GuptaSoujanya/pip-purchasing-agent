@@ -1,0 +1,33 @@
+.pip-mascot {
+  overflow: visible;
+}
+.pip-mascot-eyes {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: pip-blink 9s ease-in-out infinite;
+}
+.pip-mascot-hand {
+  transform-box: fill-box;
+  transform-origin: bottom center;
+  transition: transform 0.3s;
+}
+.pip-mascot:hover .pip-mascot-hand {
+  transform: rotate(12deg);
+}
+@keyframes pip-blink {
+  0%,
+  43%,
+  47%,
+  100% {
+    transform: scaleY(1);
+  }
+  45% {
+    transform: scaleY(0.12);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pip-mascot * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

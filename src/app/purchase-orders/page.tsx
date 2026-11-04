@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   getNode,
   getProduct,
@@ -11,125 +12,240 @@ import {
   PageHeader,
   Panel,
   RunLink,
-  Stat,
   StatusBadge,
   Table,
   Td,
   money,
   moneyPrecise,
 } from "@/components/ui";
+import { Icon } from "@/components/icons";
+import "@/components/workflow-pages.css";
 
 export const dynamic = "force-dynamic";
+const OPEN_STATUSES = new Set([
+  "submitted",
+  "confirmed",
+  "partially_confirmed",
+]);
 
-export default function PurchaseOrdersPage() {
+export default async function PurchaseOrdersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ view?: string }>;
+}) {
+  const { view: requestedView } = await searchParams;
+  const view = ["open", "shortfalls", "closed"].includes(requestedView ?? "")
+    ? requestedView!
+    : "all";
   const pos = listPos();
-  const audit = listAudit(40).filter((a) => a.entity_type === "purchase_order");
-  const open = pos.filter((po) =>
-    ["submitted", "confirmed", "partially_confirmed"].includes(po.status),
+  const audit = listAudit(40).filter(
+    (item) => item.entity_type === "purchase_order",
   );
+  const open = pos.filter((po) => OPEN_STATUSES.has(po.status));
+  const shortfalls = pos.filter((po) => po.status === "partially_confirmed");
+  const closed = pos.filter(
+    (po) => po.status === "received" || po.status === "cancelled",
+  );
+  const shown =
+    view === "open"
+      ? open
+      : view === "shortfalls"
+        ? shortfalls
+        : view === "closed"
+          ? closed
+          : pos;
+  const poNames = new Map(pos.map((po) => [po.id, po.po_number]));
+  const tabs = [
+    { value: "all", label: "All orders", count: pos.length },
+    { value: "open", label: "Open", count: open.length },
+    {
+      value: "shortfalls",
+      label: "Supplier shortfalls",
+      count: shortfalls.length,
+    },
+    { value: "closed", label: "Closed", count: closed.length },
+  ];
 
   return (
-    <>
+    <div className="workflow-page workflow-orders">
+      <div className="workflow-kicker">OPERATIONS / ORDERS</div>
       <PageHeader
         title="Purchase orders"
-        subtitle="Track ordered quantities, supplier confirmations, and delivery status."
+        subtitle="See what’s ordered, what suppliers have confirmed, and what arrives next."
+        actions={
+          <Link href="/opportunities" className="btn">
+            <Icon name="search" size={16} /> Review purchasing needs
+          </Link>
+        }
       />
-
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat
-          label="All purchase orders"
-          value={pos.length}
-          hint="orders across all locations"
-        />
-        <Stat
-          label="Open orders"
-          value={open.length}
-          hint="submitted or confirmed with suppliers"
-        />
-        <Stat
-          label="Open order value"
-          value={money(open.reduce((total, po) => total + po.total_cost, 0))}
-          hint="total value of open purchases"
-        />
-        <Stat
-          label="Partially confirmed"
-          value={pos.filter((po) => po.status === "partially_confirmed").length}
-          hint="suppliers have confirmed less than requested"
-          tone={
-            pos.some((po) => po.status === "partially_confirmed")
-              ? "warn"
-              : "good"
-          }
-        />
-      </div>
-
+      <dl className="workflow-summary" aria-label="Order summary">
+        <div>
+          <dt>All orders</dt>
+          <dd>
+            {pos.length}
+            <small>Across your locations</small>
+          </dd>
+        </div>
+        <div data-tone="blue">
+          <dt>Open orders</dt>
+          <dd>
+            {open.length}
+            <small>Submitted or confirmed</small>
+          </dd>
+        </div>
+        <div>
+          <dt>Open order value</dt>
+          <dd>
+            {money(open.reduce((total, po) => total + po.total_cost, 0))}
+            <small>Total value of open purchases</small>
+          </dd>
+        </div>
+        <div data-tone={shortfalls.length ? "peach" : "neutral"}>
+          <dt>Supplier shortfalls</dt>
+          <dd>
+            {shortfalls.length}
+            <small>Confirmed below requested quantity</small>
+          </dd>
+        </div>
+      </dl>
       <Panel
         title="Order book"
-        subtitle="Ordered and confirmed quantities, side by side"
+        subtitle="Each order groups its products, supplier and destination."
+        right={
+          <span className="workflow-count">
+            {shown.length} {shown.length === 1 ? "order" : "orders"}
+          </span>
+        }
       >
-        {pos.length === 0 ? (
-          <Empty>No purchase orders have been created.</Empty>
+        <nav className="workflow-tabs" aria-label="Filter purchase orders">
+          {tabs.map((tab) => (
+            <Link
+              key={tab.value}
+              href={
+                tab.value === "all"
+                  ? "/purchase-orders"
+                  : `/purchase-orders?view=${tab.value}`
+              }
+              aria-current={view === tab.value ? "page" : undefined}
+            >
+              {tab.label}
+              <span>{tab.count}</span>
+            </Link>
+          ))}
+        </nav>
+        {shown.length === 0 ? (
+          <Empty>
+            <strong className="workflow-empty-title">
+              {pos.length === 0 ? "No orders yet" : "No orders in this view"}
+            </strong>
+            <p>
+              {pos.length === 0
+                ? "Approved purchasing actions will appear here with their supplier confirmations."
+                : "Switch views to see the rest of the order book."}
+            </p>
+            <Link
+              className="btn workflow-empty-action"
+              href={pos.length === 0 ? "/scenarios" : "/purchase-orders"}
+            >
+              {pos.length === 0
+                ? "Explore purchasing scenarios"
+                : "View all orders"}
+              <Icon name="arrow" size={15} />
+            </Link>
+          </Empty>
         ) : (
           <Table
             head={[
-              "PO",
-              "Supplier",
-              "Node",
+              "Purchase order",
               "Product",
-              "Ordered",
-              "Confirmed",
-              "Unit",
-              "Total",
+              "Ordered / confirmed",
+              "Unit price",
+              "Order total",
               "Delivery",
               "Status",
               "Raised by",
             ]}
           >
-            {pos.flatMap((po) =>
-              po.lines.map((l) => {
+            {shown.flatMap((po) =>
+              po.lines.map((line, index) => {
+                const product = getProduct(line.product_id);
                 const short =
-                  l.qty_confirmed > 0 && l.qty_confirmed < l.qty_ordered;
+                  line.qty_confirmed < line.qty_ordered &&
+                  (po.status === "partially_confirmed" ||
+                    po.status === "confirmed");
+                const awaiting =
+                  line.qty_confirmed === 0 && po.status === "submitted";
+                const span = po.lines.length;
                 return (
-                  <tr key={`${po.id}-${l.id}`}>
-                    <Td className="mono text-stone-800">{po.po_number}</Td>
-                    <Td className="text-[12px] text-stone-600">
-                      {getSupplier(po.supplier_id)?.name}
-                    </Td>
-                    <Td className="text-[12px] text-stone-600">
-                      {getNode(po.node_id)?.name}
-                    </Td>
-                    <Td className="text-[12px]">
-                      <span className="text-stone-800">
-                        {getProduct(l.product_id)?.sku}
-                      </span>
-                      <div className="text-[11px] text-stone-500">
-                        {getProduct(l.product_id)?.name}
-                      </div>
-                    </Td>
-                    <Td className="mono">{l.qty_ordered}</Td>
-                    <Td
-                      className={`mono ${short ? "text-amber-800" : "text-stone-700"}`}
-                    >
-                      {l.qty_confirmed}
-                      {short && (
-                        <span className="ml-1.5 text-[10.5px]">
-                          (−{l.qty_ordered - l.qty_confirmed})
+                  <tr
+                    key={`${po.id}-${line.id}`}
+                    className={index === 0 ? "workflow-order-start" : undefined}
+                    data-attention={short || undefined}
+                  >
+                    {index === 0 && (
+                      <td rowSpan={span}>
+                        <strong className="workflow-cell-title mono">
+                          {po.po_number}
+                        </strong>
+                        <span className="workflow-cell-meta">
+                          {getSupplier(po.supplier_id)?.name ?? po.supplier_id}
                         </span>
-                      )}
-                    </Td>
-                    <Td className="mono text-stone-600">
-                      ${l.unit_price.toFixed(2)}
-                    </Td>
-                    <Td className="mono">{moneyPrecise(po.total_cost)}</Td>
-                    <Td className="mono text-[11.5px] text-stone-600">
-                      {po.expected_delivery ?? "—"}
+                        <span className="workflow-location">
+                          <Icon name="warehouse" size={13} />
+                          {getNode(po.node_id)?.name ?? po.node_id}
+                        </span>
+                      </td>
+                    )}
+                    <Td>
+                      <span className="workflow-cell-title">
+                        {product?.name ?? line.product_id}
+                      </span>
+                      <span className="workflow-cell-meta mono">
+                        {product?.sku}
+                      </span>
                     </Td>
                     <Td>
-                      <StatusBadge status={po.status} />
+                      <span className="workflow-quantities">
+                        <strong>
+                          {line.qty_ordered.toLocaleString("en-US")}
+                        </strong>
+                        <span>/</span>
+                        <strong data-short={short || undefined}>
+                          {line.qty_confirmed.toLocaleString("en-US")}
+                        </strong>
+                      </span>
+                      {short ? (
+                        <span className="workflow-cell-meta workflow-shortfall">
+                          {(
+                            line.qty_ordered - line.qty_confirmed
+                          ).toLocaleString("en-US")}{" "}
+                          units short
+                        </span>
+                      ) : awaiting ? (
+                        <span className="workflow-cell-meta">
+                          Awaiting confirmation
+                        </span>
+                      ) : null}
                     </Td>
-                    <Td className="text-[11.5px] text-stone-500">
-                      {po.created_by}
-                    </Td>
+                    <Td className="mono">{moneyPrecise(line.unit_price)}</Td>
+                    {index === 0 && (
+                      <>
+                        <td rowSpan={span} className="mono workflow-money">
+                          {moneyPrecise(po.total_cost)}
+                        </td>
+                        <td rowSpan={span}>
+                          <span className="workflow-cell-title">
+                            {po.expected_delivery ?? "Not scheduled"}
+                          </span>
+                        </td>
+                        <td rowSpan={span}>
+                          <StatusBadge status={po.status} />
+                        </td>
+                        <td rowSpan={span} className="workflow-actor">
+                          {po.created_by}
+                        </td>
+                      </>
+                    )}
                   </tr>
                 );
               }),
@@ -137,49 +253,74 @@ export default function PurchaseOrdersPage() {
           </Table>
         )}
       </Panel>
-
-      <div className="mt-4">
-        <Panel
-          title="Order activity"
-          subtitle="A record of each change and the agent run behind it"
-        >
-          {audit.length === 0 ? (
-            <Empty>No order changes recorded.</Empty>
-          ) : (
-            <Table head={["Time", "Entity", "Action", "Actor", "Run"]}>
-              {audit.map((a) => (
-                <tr key={a.id}>
-                  <Td className="mono text-[11.5px] text-stone-600">
-                    {a.created_at.slice(11, 19)}
-                  </Td>
-                  <Td className="mono text-stone-700">{a.entity_id}</Td>
-                  <Td>
-                    <Badge
-                      tone={
-                        a.action === "create"
-                          ? "green"
-                          : a.action === "cancel"
-                            ? "red"
-                            : "amber"
-                      }
-                    >
-                      {a.action}
-                    </Badge>
-                  </Td>
-                  <Td className="text-[12px] text-stone-600">{a.actor}</Td>
-                  <Td>
-                    {a.run_id ? (
-                      <RunLink id={a.run_id}>{a.run_id.slice(-9)}</RunLink>
-                    ) : (
-                      "—"
-                    )}
-                  </Td>
-                </tr>
-              ))}
-            </Table>
-          )}
-        </Panel>
-      </div>
-    </>
+      {shortfalls.length > 0 && (
+        <div className="workflow-next-step">
+          <Icon name="orders" size={18} />
+          <p>Review supplier shortfalls before planning replacement stock.</p>
+          <Link href="/opportunities">
+            Investigate findings
+            <Icon name="arrow" size={15} />
+          </Link>
+        </div>
+      )}
+      <Panel
+        title="Recent order changes"
+        subtitle="Changes recorded in the latest 40 workspace audit events."
+        className="workflow-secondary-panel"
+      >
+        {audit.length === 0 ? (
+          <Empty>
+            No purchase-order changes in the latest workspace activity.
+          </Empty>
+        ) : (
+          <Table
+            head={[
+              "Recorded",
+              "Purchase order",
+              "Change",
+              "Actor",
+              "Agent run",
+            ]}
+          >
+            {audit.map((item) => (
+              <tr key={item.id}>
+                <Td>
+                  <span className="workflow-cell-title">
+                    {item.created_at.slice(0, 10)}
+                  </span>
+                  <span className="workflow-cell-meta">
+                    {item.created_at.slice(11, 19)} UTC
+                  </span>
+                </Td>
+                <Td className="mono">
+                  {poNames.get(item.entity_id) ?? item.entity_id}
+                </Td>
+                <Td>
+                  <Badge
+                    tone={
+                      item.action === "create"
+                        ? "green"
+                        : item.action === "cancel"
+                          ? "red"
+                          : "amber"
+                    }
+                  >
+                    {item.action.replace(/_/g, " ")}
+                  </Badge>
+                </Td>
+                <Td className="workflow-actor">{item.actor}</Td>
+                <Td>
+                  {item.run_id ? (
+                    <RunLink id={item.run_id}>{item.run_id.slice(-9)}</RunLink>
+                  ) : (
+                    <span className="workflow-cell-meta">No linked run</span>
+                  )}
+                </Td>
+              </tr>
+            ))}
+          </Table>
+        )}
+      </Panel>
+    </div>
   );
 }

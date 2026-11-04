@@ -1,4 +1,11 @@
 @font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("/fonts/bricolage-grotesque-variable.ttf") format("truetype");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
   font-family: "DM Sans";
   src: url("/fonts/dm-sans-variable.ttf") format("truetype");
   font-weight: 100 900;
@@ -11,17 +18,18 @@
 
 :root {
   color-scheme: light;
-  --canvas: #f6f4f8;
+  --canvas: #f4f1e9;
+  --font-display: "Bricolage Grotesque", "DM Sans", sans-serif;
   --surface: #ffffff;
   --sidebar: #efebf2;
-  --ink: #241a2d;
-  --secondary: #655a6e;
-  --muted: #716579;
-  --line: #e4dce9;
-  --line-light: #f0ebf3;
-  --accent: #392249;
-  --accent-hover: #271336;
-  --selection: #e7dcef;
+  --ink: #20231f;
+  --secondary: #5d6258;
+  --muted: #61665b;
+  --line: #d7d7cd;
+  --line-light: #e5e3db;
+  --accent: #2449ef;
+  --accent-hover: #1635c1;
+  --selection: #d9ed82;
   --warning: #9c542d;
   --warning-soft: #f8ede3;
   --radius: 10px;
@@ -29,6 +37,14 @@
 }
 * {
   box-sizing: border-box;
+}
+html {
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
 }
 body {
   margin: 0;
@@ -70,7 +86,7 @@ button:disabled {
   outline-offset: 4px;
 }
 ::selection {
-  background: #d9e5d1;
+  background: #e7dcef;
   color: var(--ink);
 }
 @layer components {
@@ -122,10 +138,10 @@ button:disabled {
     gap: 8px;
     min-height: 40px;
     padding: 9px 15px;
-    border: 1px solid #d4d8ce;
+    border: 1px solid #ded5e5;
     border-radius: 7px;
     background: #fff;
-    color: #34473b;
+    color: #50375e;
     font-size: 13px;
     line-height: 1.5;
     font-weight: 550;
@@ -134,8 +150,8 @@ button:disabled {
       border-color 0.15s;
   }
   .btn:hover {
-    background: #f4f5f0;
-    border-color: #bac4b5;
+    background: #f5f0f8;
+    border-color: #cbb9d7;
   }
   .btn:disabled {
     opacity: 0.55;
@@ -183,12 +199,12 @@ button:disabled {
     white-space: nowrap;
   }
   .badge-slate {
-    background: #f0f1ec;
-    color: #5b645a;
+    background: #efebf2;
+    color: #6d6076;
   }
   .badge-sky {
-    background: #edf1ee;
-    color: #416452;
+    background: #e8eef8;
+    color: #4f5f80;
   }
   .badge-green {
     background: #edf3e8;
@@ -203,8 +219,8 @@ button:disabled {
     color: #a34538;
   }
   .badge-violet {
-    background: #eeefe8;
-    color: #596145;
+    background: #ede4f5;
+    color: #705088;
   }
   .kv {
     display: flex;
@@ -364,7 +380,7 @@ button:disabled {
   color: var(--ink);
 }
 .breadcrumb > svg {
-  color: #85907c;
+  color: #947d9f;
 }
 .topbar-actions {
   display: flex;
@@ -384,7 +400,7 @@ button:disabled {
   font-size: 12px;
 }
 .search-trigger:hover {
-  border-color: #bdc8b5;
+  border-color: #c9b5d8;
 }
 kbd {
   padding: 0 4px;
@@ -520,16 +536,16 @@ kbd {
 }
 .context-tag {
   padding: 2px 6px;
-  color: #68705c;
-  background: #eceee4;
-  border: 1px solid #e0e3d7;
+  color: #74637f;
+  background: #eee8f3;
+  border: 1px solid #e0d6e8;
   border-radius: 4px;
   font-size: 10px;
 }
 .context-separator {
   width: 1px;
   height: 11px;
-  background: #d1d7c7;
+  background: #d8cce2;
   margin: 0 4px;
 }
 .overview-metrics {
@@ -568,7 +584,7 @@ kbd {
   margin-top: 9px;
 }
 .overview-metric strong > svg {
-  color: #798d6e;
+  color: #9a80ac;
   margin-left: auto;
   opacity: 0.7;
 }
@@ -986,7 +1002,7 @@ kbd {
 }
 .spent-dot {
   background: #e8e0ef;
-  border: 1px solid #cdd6be;
+  border: 1px solid #d4c4e0;
 }
 .budget-location-heading {
   padding-top: 19px;
@@ -1208,7 +1224,7 @@ kbd {
   line-height: 1.6;
 }
 a.stat-card:hover {
-  border-color: #aabda0;
+  border-color: #b89acb;
 }
 .stat-warn .stat-value {
   color: #956023;
@@ -1261,7 +1277,7 @@ a.stat-card:hover {
   line-height: 1.7;
 }
 .empty-state-icon {
-  color: #849276;
+  color: #9b84ab;
   padding: 7px;
 }
 .search-dialog {
@@ -1387,12 +1403,12 @@ dialog::backdrop {
   height: 7px;
 }
 ::-webkit-scrollbar-track {
-  background: #f2f3ec;
+  background: #f2edf6;
 }
 ::-webkit-scrollbar-thumb {
-  background: #c7cfbb;
+  background: #cfc0db;
   border-radius: 6px;
-  border: 1px solid #f2f3ec;
+  border: 1px solid #f2edf6;
 }
 @media (min-width: 1600px) {
   .workspace-main {
@@ -1853,7 +1869,7 @@ dialog::backdrop {
   }
   .mobile-cell-label {
     display: inline;
-    color: #6c7c60;
+    color: #80688f;
     font-size: 11px;
     margin-right: 8px;
   }

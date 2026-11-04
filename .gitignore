@@ -27,3 +27,4 @@ next-env.d.ts
 .agents/
 artifacts/
 .playwright-mcp/
+.agents/skills/stageshow/

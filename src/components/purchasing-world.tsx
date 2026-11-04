@@ -7,6 +7,7 @@ export type PurchasingWorldProps = {
   miniature?: boolean;
   paused?: boolean;
   onActivate?: () => void;
+  onSelectNode?: (index: number) => void;
 };
 
 const PALETTES = [
@@ -39,16 +40,40 @@ const PALETTES = [
   },
 ];
 
+/** RAF's shared timestamp can precede the performance.now() used to queue it. */
+export function advanceWorldClock(
+  elapsed: number,
+  previousTime: number,
+  now: number,
+  paused = false,
+) {
+  const safeElapsed = Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : 0;
+  const safePrevious = Number.isFinite(previousTime) ? previousTime : 0;
+  const timestamp = Number.isFinite(now) ? now : safePrevious;
+  const delta =
+    Number.isFinite(now) && Number.isFinite(previousTime)
+      ? Math.max(0, Math.min((now - previousTime) / 1000, 0.05))
+      : 0;
+  return { elapsed: safeElapsed + (paused ? 0 : delta), timestamp };
+}
+
+/** CatmullRomCurve3.getPointAt requires a finite position in its unit interval. */
+export function wrapWorldRoutePhase(phase: number) {
+  return Number.isFinite(phase) ? ((phase % 1) + 1) % 1 : 0;
+}
+
 /** A decorative, original low-poly world. The host supplies its accessible action. */
 export function PurchasingWorld({
   activeScene = 0,
   miniature = false,
   paused = false,
   onActivate,
+  onSelectNode,
 }: PurchasingWorldProps) {
   const host = useRef<HTMLDivElement>(null);
   const selection = useRef(activeScene);
   const activate = useRef(onActivate);
+  const selectNode = useRef(onSelectNode);
   const pause = useRef(paused);
   const requestRender = useRef<(() => void) | null>(null);
   const syncPlayback = useRef<(() => void) | null>(null);
@@ -62,6 +87,9 @@ export function PurchasingWorld({
   useEffect(() => {
     activate.current = onActivate;
   }, [onActivate]);
+  useEffect(() => {
+    selectNode.current = onSelectNode;
+  }, [onSelectNode]);
   useEffect(() => {
     pause.current = paused;
     syncPlayback.current?.();
@@ -247,12 +275,25 @@ export function PurchasingWorld({
       ridgeGeometry.computeVertexNormals();
       scene.add(new THREE.Mesh(ridgeGeometry, mountainMaterial));
 
+      const nodeLocations = [
+        { x: -3.8, z: -9, scale: 0.9, turn: 0.24 },
+        { x: 4.7, z: -27, scale: 0.76, turn: -0.28 },
+        { x: 3.1, z: -4, scale: 0.55, turn: -0.18 },
+      ];
       const rockGeometry = new THREE.DodecahedronGeometry(1, 0);
       for (let i = 0; i < 35; i++) {
         const rock = new THREE.Mesh(rockGeometry, rockMaterial);
         let x = (random() - 0.5) * 66;
         const z = -30 + random() * 36;
         if (Math.abs(x) < 3.5 && z > -5) x += x < 0 ? -5 : 5;
+        if (
+          nodeLocations.some(
+            (node) =>
+              Math.abs(x - node.x) < node.scale * 3.5 + 1 &&
+              Math.abs(z - node.z) < node.scale * 3.5 + 1,
+          )
+        )
+          x += x < 0 ? -6 : 6;
         const scale = 0.18 + random() * 0.8;
         rock.scale.set(
           scale * (1.1 + random()),
@@ -272,110 +313,207 @@ export function PurchasingWorld({
       foreground.rotation.set(0.2, 0.5, -0.2);
       scene.add(foreground);
 
-      // An orbital observatory, intentionally original rather than the reference's branding.
-      const observatory = new THREE.Group();
-      observatory.position.set(-8.7, 1.05, -12);
-      observatory.rotation.z = -0.1;
-      observatory.rotation.y = -0.15;
+      // Fulfillment nodes share an architectural language: ribbed hangars and loading bays.
       const planetMaterial = new THREE.MeshStandardMaterial({
         color: palette.planet,
-        roughness: 0.9,
-        metalness: 0.03,
-      });
-      const planet = new THREE.Mesh(
-        new THREE.SphereGeometry(2.75, 48, 32),
-        planetMaterial,
-      );
-      observatory.add(planet);
-      const bandMaterial = new THREE.MeshStandardMaterial({
-        color: "#62347d",
-        roughness: 1,
-      });
-      for (const elevation of [-1.8, -1.55, 1.65, 2.1]) {
-        const radius = Math.sqrt(2.75 ** 2 - elevation ** 2) + 0.012;
-        const band = new THREE.Mesh(
-          new THREE.TorusGeometry(radius, 0.012, 4, 64),
-          bandMaterial,
-        );
-        band.rotation.x = Math.PI / 2;
-        band.position.y = elevation;
-        observatory.add(band);
-      }
-      const visorMaterial = new THREE.MeshStandardMaterial({
-        color: "#472164",
-        roughness: 0.28,
-        metalness: 0.25,
-      });
-      const frameMaterial = new THREE.MeshStandardMaterial({
-        color: "#d7b4f1",
         roughness: 0.75,
+        metalness: 0.12,
       });
-      for (const phi of [0.68, 1.69]) {
-        const frame = new THREE.Mesh(
-          new THREE.SphereGeometry(2.78, 20, 16, phi, 0.88, 1.03, 0.68),
-          frameMaterial,
-        );
-        const visor = new THREE.Mesh(
-          new THREE.SphereGeometry(2.8, 20, 16, phi + 0.035, 0.81, 1.065, 0.61),
-          visorMaterial,
-        );
-        observatory.add(frame, visor);
-      }
-      const platform = new THREE.Mesh(
-        new THREE.DodecahedronGeometry(3.2, 0),
-        rockMaterial,
+      const ribMaterial = new THREE.MeshStandardMaterial({
+        color: "#eee1fa",
+        roughness: 0.6,
+        metalness: 0.15,
+      });
+      const dockMaterial = new THREE.MeshStandardMaterial({
+        color: "#49295f",
+        roughness: 0.8,
+      });
+      const doorMaterial = new THREE.MeshStandardMaterial({
+        color: "#725183",
+        roughness: 0.7,
+        metalness: 0.2,
+      });
+      const lampMaterial = new THREE.MeshBasicMaterial({ color: "#e1ffd1" });
+      const crateMaterial = new THREE.MeshStandardMaterial({
+        color: "#d7bbe8",
+        roughness: 0.9,
+      });
+      const unitBox = new THREE.BoxGeometry(1, 1, 1);
+      const shellShape = new THREE.Shape();
+      shellShape.moveTo(-2.5, 0);
+      shellShape.lineTo(2.5, 0);
+      shellShape.lineTo(2.5, 1.35);
+      shellShape.absarc(0, 1.35, 2.5, 0, Math.PI, false);
+      shellShape.lineTo(-2.5, 0);
+      const warehouseGeometry = new THREE.ExtrudeGeometry(shellShape, {
+        depth: 4.1,
+        bevelEnabled: true,
+        bevelSize: 0.035,
+        bevelThickness: 0.035,
+        bevelSegments: 1,
+        curveSegments: 16,
+      });
+      warehouseGeometry.translate(0, 0, -2.05);
+      const roofRibGeometry = new THREE.TorusGeometry(
+        2.53,
+        0.035,
+        4,
+        28,
+        Math.PI,
       );
-      platform.position.set(-0.3, -3.4, 0.2);
-      platform.scale.set(1.1, 0.19, 0.78);
-      observatory.add(platform);
-      const lowerLight = new THREE.Mesh(
-        new THREE.CircleGeometry(0.68, 32),
-        new THREE.MeshBasicMaterial({
-          color: "#8fa3ff",
-          transparent: true,
-          opacity: 0.85,
-        }),
-      );
-      lowerLight.rotation.x = -Math.PI / 2;
-      lowerLight.position.set(0, -2.92, 0);
-      observatory.add(lowerLight);
-      scene.add(observatory);
+      const box = (
+        parent: InstanceType<typeof THREE.Group>,
+        material: InstanceType<typeof THREE.Material>,
+        size: [number, number, number],
+        position: [number, number, number],
+      ) => {
+        const mesh = new THREE.Mesh(unitBox, material);
+        mesh.scale.set(...size);
+        mesh.position.set(...position);
+        parent.add(mesh);
+        return mesh;
+      };
+      const warehouses: InstanceType<typeof THREE.Group>[] = [];
+      nodeLocations.forEach(({ x, z, scale, turn }, index) => {
+        const warehouse = new THREE.Group();
+        warehouse.position.set(x, -1.88, z);
+        warehouse.rotation.y = turn;
+        warehouse.scale.setScalar(scale);
+        warehouse.add(new THREE.Mesh(warehouseGeometry, planetMaterial));
+        box(warehouse, dockMaterial, [6.1, 0.2, 6.1], [0, -0.04, 0.5]);
+        for (let ribIndex = 0; ribIndex < 7; ribIndex++) {
+          const depth = -2.05 + (ribIndex * 4.1) / 6;
+          const rib = new THREE.Mesh(roofRibGeometry, ribMaterial);
+          rib.position.set(0, 1.35, depth);
+          warehouse.add(rib);
+          box(
+            warehouse,
+            ribMaterial,
+            [0.045, 1.35, 0.045],
+            [-2.53, 0.675, depth],
+          );
+          box(
+            warehouse,
+            ribMaterial,
+            [0.045, 1.35, 0.045],
+            [2.53, 0.675, depth],
+          );
+        }
+        for (const bayX of [-1.17, 1.17]) {
+          box(warehouse, ribMaterial, [1.91, 1.97, 0.12], [bayX, 1.02, 2.1]);
+          box(warehouse, dockMaterial, [1.71, 1.79, 0.13], [bayX, 0.96, 2.18]);
+          for (let slat = 0; slat < 6; slat++)
+            box(
+              warehouse,
+              doorMaterial,
+              [1.62, 0.19, 0.04],
+              [bayX, 0.3 + slat * 0.25, 2.27],
+            );
+          box(warehouse, lampMaterial, [1.6, 0.065, 0.09], [bayX, 2.05, 2.21]);
+          for (const offset of [-0.65, 0.65])
+            box(
+              warehouse,
+              ribMaterial,
+              [0.04, 0.012, 0.8],
+              [bayX + offset, 0.07, 2.92],
+            );
+        }
+        for (const [crateX, crateY, crateZ] of [
+          [-2.62, 0.3, 2.7],
+          [-2.62, 0.87, 2.7],
+          [-2.04, 0.3, 3.07],
+        ]) {
+          box(
+            warehouse,
+            crateMaterial,
+            [0.51, 0.54, 0.51],
+            [crateX, crateY, crateZ],
+          );
+          box(
+            warehouse,
+            dockMaterial,
+            [0.09, 0.548, 0.518],
+            [crateX, crateY, crateZ],
+          );
+        }
+        warehouse.traverse((object) => {
+          object.userData.nodeIndex = index;
+        });
+        warehouses.push(warehouse);
+        scene.add(warehouse);
+      });
 
-      const floatingRocks: InstanceType<typeof THREE.Mesh>[] = [];
-      for (const [x, y, z, scale] of [
-        [-6, 5.4, -23, 0.65],
-        [7.2, 3.1, -19, 0.35],
-        [-3.5, 3.7, -29, 0.3],
+      // These ambient paths describe a network, not shipment progress or live status.
+      const routeMaterial = new THREE.MeshBasicMaterial({
+        color: "#d7c2f2",
+        transparent: true,
+        opacity: 0.58,
+        depthWrite: false,
+      });
+      const routeGlowMaterial = new THREE.MeshBasicMaterial({
+        color: "#e3c5ff",
+        transparent: true,
+        opacity: 0.045,
+        depthWrite: false,
+      });
+      const flowGeometry = new THREE.SphereGeometry(0.055, 8, 6);
+      const routes: {
+        curve: InstanceType<typeof THREE.CatmullRomCurve3>;
+        light: InstanceType<typeof THREE.Mesh>;
+      }[] = [];
+      for (const [from, to, rise] of [
+        [0, 1, 0.5],
+        [1, 2, 0.1],
+        [2, 0, 0.7],
       ]) {
-        const stone = new THREE.Mesh(rockGeometry, mountainMaterial);
-        stone.position.set(x, y, z);
-        stone.scale.set(scale, scale * 0.6, scale * 0.8);
-        stone.rotation.set(0.5, 0.4, -0.3);
-        stone.userData.baseY = y;
-        floatingRocks.push(stone);
-        scene.add(stone);
+        const start = new THREE.Vector3(
+          nodeLocations[from].x,
+          -1.48,
+          nodeLocations[from].z + nodeLocations[from].scale * 3.2,
+        );
+        const end = new THREE.Vector3(
+          nodeLocations[to].x,
+          -1.48,
+          nodeLocations[to].z + nodeLocations[to].scale * 3.2,
+        );
+        const midpoint = start.clone().lerp(end, 0.5);
+        midpoint.y = rise;
+        midpoint.z -= 1.7;
+        const curve = new THREE.CatmullRomCurve3([start, midpoint, end]);
+        scene.add(
+          new THREE.Mesh(
+            new THREE.TubeGeometry(curve, 42, 0.018, 4, false),
+            routeMaterial,
+          ),
+        );
+        scene.add(
+          new THREE.Mesh(
+            new THREE.TubeGeometry(curve, 42, 0.09, 5, false),
+            routeGlowMaterial,
+          ),
+        );
+        const light = new THREE.Mesh(flowGeometry, lampMaterial);
+        curve.getPointAt(0.25, light.position);
+        scene.add(light);
+        routes.push({ curve, light });
       }
 
       const focal = new THREE.Group();
-      focal.position.set(0, miniature ? 0.1 : -0.15, miniature ? 2 : 2.8);
+      focal.position.set(0, miniature ? 0.1 : 0.35, miniature ? 2 : 2.8);
       const focusMaterial = new THREE.MeshStandardMaterial({
         color: miniature ? "#efc9ff" : palette.focus,
         emissive: miniature ? "#b571de" : palette.focus,
         emissiveIntensity: 0.13,
-        roughness: 0.38,
-        metalness: 0.06,
+        roughness: 0.78,
+        metalness: 0,
         flatShading: true,
-        transparent: true,
-        opacity: 0.94,
       });
       const focusOutlineMaterial = new THREE.LineBasicMaterial({
         color: miniature ? "#b979d4" : "#668942",
         transparent: true,
         opacity: 0.72,
       });
-      const focalGeometry = miniature
-        ? new THREE.CylinderGeometry(0.32, 0.4, 1.85, 6)
-        : new THREE.BoxGeometry(1.04, 1.04, 1.04);
+      const focalGeometry = new THREE.BoxGeometry(1.18, 1, 1.1);
       const focalMesh = new THREE.Mesh(focalGeometry, focusMaterial);
       focal.add(
         focalMesh,
@@ -384,15 +522,32 @@ export function PurchasingWorld({
           focusOutlineMaterial,
         ),
       );
-      if (miniature) {
-        const crown = new THREE.Mesh(
-          new THREE.ConeGeometry(0.32, 0.55, 6),
-          focusMaterial,
+      const tapeMaterial = new THREE.MeshStandardMaterial({
+        color: "#593565",
+        roughness: 0.85,
+      });
+      const labelMaterial = new THREE.MeshStandardMaterial({
+        color: "#fffbef",
+        roughness: 1,
+      });
+      box(focal, tapeMaterial, [0.19, 1.012, 1.112], [-0.11, 0, 0]);
+      box(focal, tapeMaterial, [1.188, 0.012, 0.13], [0, 0.506, 0]);
+      box(focal, labelMaterial, [0.29, 0.25, 0.007], [0.3, 0.1, 0.555]);
+      for (let line = 0; line < 3; line++)
+        box(
+          focal,
+          tapeMaterial,
+          [line === 0 ? 0.18 : 0.13, 0.013, 0.004],
+          [0.29, 0.175 - line * 0.037, 0.561],
         );
-        crown.position.y = 1.2;
-        focal.add(crown);
-        focal.rotation.z = 0.08;
-      }
+      for (let bar = 0; bar < 7; bar++)
+        box(
+          focal,
+          tapeMaterial,
+          [bar % 3 === 0 ? 0.018 : 0.009, 0.044, 0.004],
+          [0.21 + bar * 0.027, 0.032, 0.561],
+        );
+      if (miniature) focal.scale.setScalar(1.35);
       focal.rotation.y = -0.55;
       scene.add(focal);
       const shadow = new THREE.Mesh(
@@ -440,8 +595,14 @@ export function PurchasingWorld({
           return;
         }
         const frozen = pause.current;
-        if (!frozen) elapsed += Math.min((now - previousTime) / 1000, 0.05);
-        previousTime = now;
+        const clock = advanceWorldClock(
+          elapsed,
+          previousTime,
+          now,
+          frozen || reducedMotion,
+        );
+        elapsed = clock.elapsed;
+        previousTime = clock.timestamp;
         const current = paletteColors[selection.current] ?? paletteColors[0];
         const colorMix = reducedMotion || frozen ? 1 : 0.035;
         groundMaterial.color.lerp(current.ground, colorMix);
@@ -476,11 +637,14 @@ export function PurchasingWorld({
             (reducedMotion ? 0 : Math.sin(elapsed * 0.28) * 0.06);
           focal.rotation.y +=
             (rotation - focal.rotation.y) * (reducedMotion ? 1 : 0.04);
-          for (let i = 0; i < floatingRocks.length; i++) {
-            const stone = floatingRocks[i];
-            stone.position.y =
-              stone.userData.baseY +
-              (reducedMotion ? 0 : Math.sin(elapsed * 0.45 + i) * 0.08);
+          for (let i = 0; i < routes.length; i++) {
+            const route = routes[i];
+            route.curve.getPointAt(
+              reducedMotion
+                ? 0.25
+                : wrapWorldRoutePhase(elapsed * 0.035 + i / 3),
+              route.light.position,
+            );
           }
         }
         renderer.render(scene, camera);
@@ -512,13 +676,41 @@ export function PurchasingWorld({
         if (!pause.current) invalidate();
       };
       const resize = () => {
+        if (disposed || lost) return;
         width = Math.max(1, container.clientWidth);
         height = Math.max(1, container.clientHeight);
         camera.aspect = width / height;
-        camera.fov = miniature ? 38 : width / height < 0.8 ? 49 : 42;
+        const portraitAmount = miniature
+          ? 0
+          : THREE.MathUtils.clamp((0.8 - camera.aspect) / 0.22, 0, 1);
+        camera.fov = miniature ? 38 : 42 + portraitAmount * 7;
+        if (!miniature) {
+          // Portrait leaves the lower screen for the location card. Pull back
+          // and look down so the complete network occupies the clear map area.
+          baseCamera.set(
+            0,
+            THREE.MathUtils.lerp(2.4, 4.4, portraitAmount),
+            THREE.MathUtils.lerp(13.5, 26, portraitAmount),
+          );
+          gaze.set(0, THREE.MathUtils.lerp(1.4, -1.8, portraitAmount), -15);
+          camera.position.copy(baseCamera);
+          camera.lookAt(gaze);
+          mouse.set(0, 0);
+        }
         camera.updateProjectionMatrix();
+        const pixelRatio = Math.min(
+          window.devicePixelRatio || 1,
+          miniature ? 1.5 : 1.75,
+        );
+        if (renderer.getPixelRatio() !== pixelRatio)
+          renderer.setPixelRatio(pixelRatio);
         renderer.setSize(width, height, false);
-        observatory.visible = !miniature || width > 200;
+        warehouses.forEach((warehouse) => {
+          warehouse.visible = !miniature || width > 200;
+        });
+        // setSize clears the drawing buffer. Draw before a pause or observer
+        // update can cancel the scheduled animation frame and leave it blank.
+        renderer.render(scene, camera);
         invalidate();
       };
       const pointAt = (event: PointerEvent) => {
@@ -528,16 +720,23 @@ export function PurchasingWorld({
           (-(event.clientY - bounds.top) / bounds.height) * 2 + 1,
         );
         raycaster.setFromCamera(pointer, camera);
-        return raycaster
-          .intersectObjects(focal.children, false)
-          .some((hit) => hit.object.type === "Mesh");
+        const hit = raycaster
+          .intersectObjects([focal, ...warehouses], true)
+          .find((entry) => entry.object.type === "Mesh");
+        if (!hit) return null;
+        const nodeIndex = hit.object.userData.nodeIndex;
+        return typeof nodeIndex === "number"
+          ? { kind: "node" as const, index: nodeIndex }
+          : { kind: "parcel" as const };
       };
       const onPointerMove = (event: PointerEvent) => {
         if (miniature || pause.current) return;
         const hit = pointAt(event);
         if (!reducedMotion) mouse.copy(pointer);
         renderer.domElement.style.cursor =
-          hit && activate.current ? "pointer" : "auto";
+          hit && (hit.kind === "node" ? selectNode.current : activate.current)
+            ? "pointer"
+            : "auto";
       };
       const onPointerLeave = () => {
         mouse.set(0, 0);
@@ -555,7 +754,10 @@ export function PurchasingWorld({
           event.clientY - press.y,
         );
         press = null;
-        if (moved < 7 && pointAt(event)) activate.current?.();
+        if (moved >= 7) return;
+        const hit = pointAt(event);
+        if (hit?.kind === "node") selectNode.current?.(hit.index);
+        else if (hit?.kind === "parcel") activate.current?.();
       };
       const onVisibility = () => {
         if (document.hidden) {
@@ -576,6 +778,13 @@ export function PurchasingWorld({
         renderer.domElement.style.display = "none";
         setReady(false);
       };
+      const onContextRestored = () => {
+        if (disposed) return;
+        lost = false;
+        renderer.domElement.style.display = "block";
+        resize();
+        setReady(true);
+      };
       const resizeObserver = new ResizeObserver(resize);
       resizeObserver.observe(container);
       const intersectionObserver = new IntersectionObserver(([entry]) => {
@@ -592,7 +801,12 @@ export function PurchasingWorld({
       renderer.domElement.addEventListener("pointerdown", onPointerDown);
       renderer.domElement.addEventListener("pointerup", onPointerUp);
       renderer.domElement.addEventListener("webglcontextlost", onContextLost);
+      renderer.domElement.addEventListener(
+        "webglcontextrestored",
+        onContextRestored,
+      );
       document.addEventListener("visibilitychange", onVisibility);
+      window.addEventListener("resize", resize);
       motionQuery.addEventListener("change", onMotion);
       resize();
       renderer.render(scene, camera);
@@ -606,6 +820,7 @@ export function PurchasingWorld({
         resizeObserver.disconnect();
         intersectionObserver.disconnect();
         document.removeEventListener("visibilitychange", onVisibility);
+        window.removeEventListener("resize", resize);
         motionQuery.removeEventListener("change", onMotion);
         renderer.domElement.removeEventListener("pointermove", onPointerMove);
         renderer.domElement.removeEventListener("pointerleave", onPointerLeave);
@@ -614,6 +829,10 @@ export function PurchasingWorld({
         renderer.domElement.removeEventListener(
           "webglcontextlost",
           onContextLost,
+        );
+        renderer.domElement.removeEventListener(
+          "webglcontextrestored",
+          onContextRestored,
         );
         disposeWorld();
       };
@@ -671,24 +890,112 @@ export function PurchasingWorld({
             background: "linear-gradient(#925db7,#6d3c99)",
           }}
         />
+        <svg
+          viewBox="0 0 1000 1000"
+          preserveAspectRatio="none"
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            overflow: "visible",
+          }}
+        >
+          <path
+            d="M360 670 Q470 430 590 570 Q670 565 640 750 Q485 560 360 670"
+            fill="none"
+            stroke="#e8ceff"
+            strokeWidth="2"
+            opacity="0.6"
+          />
+        </svg>
+        {[
+          {
+            left: "36%",
+            top: "57%",
+            width: miniature ? 47 : 145,
+            height: miniature ? 34 : 105,
+          },
+          {
+            left: "59%",
+            top: "51%",
+            width: miniature ? 25 : 76,
+            height: miniature ? 20 : 60,
+          },
+          {
+            left: "64%",
+            top: "66%",
+            width: miniature ? 31 : 94,
+            height: miniature ? 23 : 70,
+          },
+        ].map((node, index) => (
+          <div
+            key={index}
+            style={{
+              position: "absolute",
+              ...node,
+              transform: "translate(-50%, -50%)",
+              borderRadius: "48% 48% 3px 3px",
+              background:
+                "repeating-linear-gradient(95deg,transparent 0 13%,#f1e1fa66 13% 14%),linear-gradient(115deg,#eed9fc,#ad84c5)",
+              boxShadow: "8px 8px 0 #76518e, 0 13px 18px #35144835",
+            }}
+          >
+            {["17%", "55%"].map((left) => (
+              <span
+                key={left}
+                style={{
+                  position: "absolute",
+                  left,
+                  bottom: 0,
+                  width: "28%",
+                  height: "48%",
+                  background:
+                    "repeating-linear-gradient(0deg,#57376c 0 13%,#826296 13% 16%)",
+                  borderTop: "2px solid #e3ffcf",
+                }}
+              />
+            ))}
+          </div>
+        ))}
         <div
           style={{
             position: "absolute",
-            width: miniature ? 35 : 64,
-            height: miniature ? 64 : 64,
-            top: "67%",
+            width: miniature ? 39 : 64,
+            height: miniature ? 34 : 56,
+            top: "72%",
             left: "50%",
             background: miniature
               ? "linear-gradient(110deg,#f5ddff,#cb88ed 64%,#8e4fc5)"
               : "linear-gradient(110deg,#dcffb6,#c2ff8c 64%,#a3d96f)",
             border: "1px solid #6d874366",
             transform: "translate(-50%,-50%) rotate(-7deg)",
-            clipPath: miniature
-              ? "polygon(50% 0,100% 18%,87% 100%,18% 91%,0 22%)"
-              : "polygon(0 12%,48% 0,100% 12%,100% 88%,51% 100%,0 88%)",
+            clipPath: "polygon(0 12%,48% 0,100% 12%,100% 88%,51% 100%,0 88%)",
             boxShadow: "0 15px 35px #421b5c33",
           }}
-        />
+        >
+          <span
+            style={{
+              position: "absolute",
+              left: "34%",
+              top: 0,
+              width: "15%",
+              height: "100%",
+              background: "#593565",
+            }}
+          />
+          <span
+            style={{
+              position: "absolute",
+              right: "12%",
+              top: "31%",
+              width: "26%",
+              height: "26%",
+              background: "#fffbef",
+              borderBottom: "3px double #593565",
+            }}
+          />
+        </div>
       </div>
     </div>
   );

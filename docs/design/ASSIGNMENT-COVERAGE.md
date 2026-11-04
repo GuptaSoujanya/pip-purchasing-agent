@@ -28,6 +28,10 @@ The existing [`latest-report.json`](../../eval/latest-report.json) records **det
 | Demand / forecast change | `assessDemandShift` tests magnitude, sustainment, statistical evidence and promotion attribution. | Genuine shift: 1,500-unit expedited order, approval, 400-unit supplier confirmation, material drift, corrective order and nonnegative budget/capacity. Promotion control: NO_ACTION. |
 | Purchasing constraint | `planConstrainedPurchase` names the binding limit, sizes a feasible order, considers overflow and can escalate when nothing fits. | Storage case proposes 1,000 units and waits for approval. The separate case named `S4-infeasible-escalates` also returns MODIFY 1,000 / awaiting_approval: its assertions allow MODIFY, so it does **not** demonstrate a fully infeasible escalation. |
 
+## Fresh regression verification after UI integration
+
+On 2026-11-05, the existing seven deterministic cases were rerun against a separate temporary database (`DB_PATH=/private/tmp/purchasing-unified-ui-evaluation.db`). All **7 cases and 61 checks passed**. This run preserved both the live demo database and `eval/latest-report.json`; its report is saved locally in `artifacts/unified-review/evaluation.json`. The test definitions and coverage limits below remain unchanged, so passing this suite does not close those gaps.
+
 ## Boundaries and gaps
 
 - **Post-action coverage is uneven.** The full independent verification loop covers the primary `create_po` and remediation orders. In `executeAndVerify`, standalone amend/cancel actions return without that loop, and follow-up amendments/cancellations/overflow orders are logged without equivalent post-validation. Do not describe every mutation as independently verified.

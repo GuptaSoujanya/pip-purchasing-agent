@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { resolveProviderId } from "@/lib/agent/llm";
+import { describeProvider, resolveProviderId } from "@/lib/agent/llm";
 import {
   budgetAvailable,
   getForecast,
@@ -42,6 +42,8 @@ export async function GET() {
   return NextResponse.json({
     today: today(),
     provider: resolveProviderId(),
+    providerLabel: describeProvider().label,
+    reasoningIsReal: describeProvider().real,
     faultInjection: (process.env.FAULT_INJECTION ?? "on") !== "off",
     nodes: nodes.map((n) => ({
       ...n,
