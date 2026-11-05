@@ -115,18 +115,25 @@ nothing.
 
 ## Screenshots
 
-**Dashboard** — stock cover, budget and space headroom, recent agent activity.
+The full browser walkthrough is recorded as two GIFs in the README: the
+[decision and self-correction loop](README.md#the-whole-loop-in-one-recording) and a
+[tour of the rest of the workspace](README.md#the-rest-of-the-workspace). Stills below.
 
-![Dashboard](docs/screenshots/dashboard.png)
+**Overview** — stock cover, budget and space headroom, recent agent activity.
 
-**Opportunities** — the portfolio sweep, after handing a finding to the agent. Note the banner:
-decision `split source`, `finding cleared`, and a link to the trace.
+![Overview](docs/media/workspace.png)
 
-![Opportunities](docs/screenshots/opportunities.png)
+**Opportunities** — the portfolio sweep. Each finding hands off to the agent as a real situation.
+
+![Opportunities](docs/media/opportunity-sweep.png)
 
 **Reasoning trace** — one run, grouped by phase, every tool call inspectable.
 
-![Run trace](docs/screenshots/run-trace.png)
+![Run trace](docs/media/run-trace.png)
+
+**Drift and self-correction** — the supplier confirmed 400 of 1,500; the agent sourced the balance.
+
+![Drift and self-correction](docs/media/drift-self-correction.png)
 
 ---
 

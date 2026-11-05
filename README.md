@@ -9,6 +9,26 @@ corrects itself when the outcome differs from what it intended.
 
 All four assignment scenarios are implemented end-to-end.
 
+### The whole loop, in one recording
+
+The agent reviews an 800-unit recommendation, recalculates it to 350, is held at the autonomy gate
+because that is a −56% deviation, gets approved, executes — and then the harder case: it sizes a
+1,500-unit expedited order, the supplier silently confirms only 400, and the agent catches that by
+re-reading the database and sources the balance elsewhere on its own.
+
+![The agent deciding, being held for approval, executing, and self-correcting after supplier drift](docs/media/demo-decision-loop.gif)
+
+<table>
+<tr>
+<td width="50%"><img src="docs/media/decision-receipt.png" alt="Decision receipt showing MODIFY 350 units held for buyer approval"><br><sub><b>It disagrees with the recommendation.</b> 800 → 350, with the arithmetic shown and the reason it stopped.</sub></td>
+<td width="50%"><img src="docs/media/drift-self-correction.png" alt="Material drift detected after the supplier confirmed 400 of 1500 units, with a corrective order placed"><br><sub><b>It notices being short-shipped.</b> 400 confirmed against 1,500 ordered → material drift → corrective order, unprompted.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/media/constraint-checks.png" alt="Constraint checks and the autonomy gate, with approve and reject actions"><br><sub><b>Constraints are checked before anything is written.</b> Hard limits block; soft ones warn and route to a human.</sub></td>
+<td width="50%"><img src="docs/media/chat-streaming.png" alt="Streaming chat reply with a provenance strip naming provider, model, latency, tokens and cost"><br><sub><b>The model call is observable.</b> Tokens stream live; the strip reports provider, latency, tokens and cost.</sub></td>
+</tr>
+</table>
+
 ---
 
 ## Quick start
@@ -41,7 +61,7 @@ For the same proof from inside the UI, open **Ask Pip** and send a question. The
 token by token over SSE, and every answer carries a provenance strip naming the provider, the model,
 the latency, the token counts and the call cost:
 
-![Streaming chat with provider, token and cost provenance](docs/screenshots/chat-streaming.png)
+![Streaming chat with provider, token and cost provenance](docs/media/chat-streaming.png)
 
 The strip also reports the verdict on the streamed text. Pip is a read-only surface, so a model reply
 is checked against an answer independently derived from the database before it is kept; if it invents
@@ -57,7 +77,7 @@ npm run typecheck    # strict TypeScript, no errors
 ```
 
 ```bash
-npm run demo         # the whole system end to end in the terminal, ~30s, no browser
+npm run demo         # the whole system end to end in the terminal, about a second, no browser
 ```
 
 A full walkthrough of both the terminal and browser demos, with screenshots and what to look for at
@@ -73,10 +93,25 @@ each step, is in [`DEMO.md`](DEMO.md).
    The supplier silently confirms only **400 of 1,500 units**. The agent catches this by re-reading
    the database, classifies it as *material drift*, and places a corrective 1,200-unit order with a
    different supplier — unprompted.
-4. Open the **reasoning trace** to see all 21 steps across six phases.
+4. Open the **reasoning trace** to see every step, grouped by phase — 37 for the run recorded
+   above, including the drift finding and the corrective order.
 
 Then run **"Yogurt sales are up 60%"**. Statistically it looks identical to the energy drink, but a
 running promotion explains the lift, so the correct answer is to do nothing. The agent does nothing.
+
+### The rest of the workspace
+
+Every decision leaves an inspectable trail, and the same primitives the agent uses for a single
+decision also sweep the whole portfolio looking for work nobody asked about.
+
+![Tour of the reasoning trace, approvals queue, purchase orders, inventory, opportunity sweep, evaluation suite and streaming chat](docs/media/demo-workspace-tour.gif)
+
+| | |
+|---|---|
+| ![Reasoning trace grouped by phase](docs/media/run-trace.png) | **Reasoning trace.** One run, grouped by the six phases, every tool call and its arguments inspectable. This is the audit record — not a log of what the agent said, but of what it read and wrote. |
+| ![Opportunity sweep listing findings across the portfolio](docs/media/opportunity-sweep.png) | **Opportunity sweep.** Read-only. Six detectors over replenishment, open-PO hygiene, supplier reliability, forecast anomalies, safety stock and excess stock. Each finding hands off to the agent as a real situation. |
+| ![Purchase orders with a partially confirmed line](docs/media/purchase-orders.png) | **Purchase orders.** Including partially-confirmed lines, so a short-shipment is visible as a fact about the world rather than only as a drift report. |
+| ![Workspace overview with stock cover, budget and space headroom](docs/media/workspace.png) | **Overview.** Stock cover, budget and space headroom per location, and recent agent activity. |
 
 ---
 
@@ -123,7 +158,7 @@ flowchart TB
 
     subgraph DATA["State"]
         direction LR
-        D1[("SQLite · 17 tables")]
+        D1[("SQLite · 18 tables")]
         D2["Mock supplier gateway<br/><i>with fault injection</i>"]
         D3[("Audit log<br/>every mutation + run id")]
     end
@@ -559,7 +594,7 @@ and no accounts to create.
 
 | Component | What it is | Where |
 |---|---|---|
-| **Database** | SQLite, 17 tables, created on demand. No server to install. | `src/lib/db/schema.sql` |
+| **Database** | SQLite, 18 tables, created on demand. No server to install. | `src/lib/db/schema.sql` |
 | **Dataset** | 3 fulfilment nodes, 5 products, 7 suppliers, 35 days of demand history, 3 open POs, 1 live supplier event, 1 active promotion, budgets and storage limits | `src/lib/db/seed.ts` |
 | **Supplier gateway** | Mock external system the agent submits orders to. Deliberately imperfect — SUP-03 silently caps any order at 400 units, SUP-05 refuses expedites it cannot service. | `src/lib/mock/supplier-gateway.ts` |
 | **Supplier inbox** | Inbound events (partial fulfilment, delay, cancellation). New ones can be injected at `POST /api/supplier-events` to create fresh situations. | `src/app/api/supplier-events/route.ts` |
@@ -604,7 +639,7 @@ it was wrong.
 
 ## Data model
 
-17 tables in SQLite. The ones that carry the interesting logic:
+18 tables in SQLite. The ones that carry the interesting logic:
 
 - `supplier_products` — MOQ, lot size, per-order cap, expedite terms. Where hard constraints live.
 - `inventory` — on hand / reserved / in transit / safety stock, separated so "available to promise"

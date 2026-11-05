@@ -319,7 +319,7 @@ Set `FAULT_INJECTION=off` to disable.
 
 ## 10. Data model
 
-17 tables. The ones carrying real logic:
+18 tables. The ones carrying real logic:
 
 | Table | Why it exists |
 |---|---|
