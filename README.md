@@ -1,5 +1,9 @@
 # AI Purchasing Agent
 
+[![Portfolio](https://img.shields.io/badge/portfolio-soujanyalab.in-0b7285?style=flat-square)](https://soujanyalab.in)
+![Stack](https://img.shields.io/badge/Next.js%2016-TypeScript-1f2937?style=flat-square)
+![Evaluation](https://img.shields.io/badge/evaluation-9%2F9%20cases%20%C2%B7%2078%2F78%20checks-2b8a3e?style=flat-square)
+
 An agent that makes, executes and **validates** purchasing decisions for a quick-commerce retailer.
 
 It is not a chatbot that answers questions about purchasing. It takes a situation, investigates it
@@ -734,3 +738,9 @@ Worth stating plainly, since this was a one-day build:
 | `.env.example` | [`.env.example`](.env.example) — every variable documented, none required |
 | No secrets committed | no keys in the tree or in history; `.env*` is gitignored |
 | Additional buyer problems (optional) | [Beyond the four scenarios](#beyond-the-four-scenarios--the-opportunity-sweep) — six finding classes covering replenishment, open POs, supplier reliability, forecast anomalies, promotional buying and safety stock |
+
+---
+
+## Author
+
+Built by **Soujanya Gupta** — [soujanyalab.in](https://soujanyalab.in) · [github.com/GuptaSoujanya](https://github.com/GuptaSoujanya)
